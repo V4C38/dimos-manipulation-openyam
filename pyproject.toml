@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openyam-coordinator-agentic"
+version = "0.1.0"
+description = "External generic OpenYAM coordinator and agentic DimOS blueprints"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = []
+
+[project.entry-points."dimos.blueprints"]
+coordinator-agentic = "openyam_coordinator_agentic.blueprints:openyam_coordinator_agentic"
+bench-planner-coordinator = "openyam_coordinator_agentic.local_bench:openyam_bench_planner_coordinator"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+dimos = { path = "../dimos", editable = true }
