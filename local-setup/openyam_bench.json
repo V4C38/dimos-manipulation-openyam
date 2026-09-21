@@ -11,6 +11,11 @@
     -0.041856074247016886,
     0.800946289753667
   ],
+  "calibration_tag_center_from_arm_axis_m": [
+    0.0,
+    -0.07,
+    0.0
+  ],
   "gripper": {
     "extents_open": [
       0.0939,

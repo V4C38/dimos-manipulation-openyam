@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,10 @@ USB21_FPS = 6
 # are at their lower limits.  Keep this local to the calibrated bench setup.
 FOLDED_POWER_OFF_JOINTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 MAX_GRASP_ATTEMPTS = 3
+MAX_DETECTION_ATTEMPTS = 5
+# At 6 FPS, this waits for three post-retreat RGB-D frames before the next
+# on-request scan selects its latest aligned frame.
+RETRY_FRAME_SETTLE_S = 0.5
 
 
 def bench_config() -> dict[str, Any]:
@@ -97,6 +102,10 @@ class CollisionAwareBenchManipulation(ManipulationModule):
 class OpenYamPickAndPlace(PickAndPlaceModule):
     """Use the URDF tip's -Z approach axis for approach and retreat."""
 
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._last_grasp_leg: tuple[PoseStamped, PoseStamped, Any] | None = None
+
     @staticmethod
     def _offset_pose(pose: PoseStamped, offset: float) -> PoseStamped:
         # GraspGenX approaches along +Z; OpenYAM's gripper_tip approaches
@@ -108,26 +117,59 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
             orientation=pose.orientation,
         )
 
+    def _servo(self, start: PoseStamped, end: PoseStamped, planning_group: Any) -> SkillResult | None:
+        """Remember the final approach so a failed close can reverse it."""
+        self._last_grasp_leg = (start, end, planning_group)
+        return super()._servo(start, end, planning_group)
+
+    def _back_off_after_failed_grasp(self) -> SkillResult | None:
+        """Reverse the just-completed straight approach to clear the camera view."""
+        if self._last_grasp_leg is None:
+            return SkillResult.fail("RETRY_BACKOFF_FAILED", "No completed grasp approach to reverse")
+        pregrasp, grasp, group = self._last_grasp_leg
+        return super()._servo(grasp, pregrasp, group)
+
     @skill(uses=[CAP_MOVEMENT])
     def pick_object(self, object_id: str, planning_group: str | None = None) -> SkillResult:
-        """Pick with two fresh perception/grasp retries, then park on failure."""
+        """Pick with two camera-clear, fresh-perception retries, then park."""
         attempted_ids = [object_id]
+        self._last_grasp_leg = None
         result = super().pick_object(object_id, planning_group)
         for _attempt in range(1, MAX_GRASP_ATTEMPTS):
             if result.success or result.error_code != "GRASP_VERIFICATION_FAILED":
                 break
-            scan = self.scan_objects(["apple"])
-            apples = [
-                item for item in scan.metadata.get("objects", [])
-                if item.get("name") == "apple" and item.get("object_id")
-            ] if scan.success else []
-            if len(apples) != 1:
+            back_off = self._back_off_after_failed_grasp()
+            if back_off is not None:
+                result.metadata["retry_backoff"] = back_off.message
+                break
+            # scan_objects processes the latest aligned RGB-D frame. Wait for
+            # frames acquired after the arm has cleared the object, rather than
+            # reusing the pre-grasp image that drove the failed attempt.
+            apples: list[dict[str, Any]] = []
+            scan: SkillResult | None = None
+            for _scan_attempt in range(MAX_DETECTION_ATTEMPTS):
+                time.sleep(RETRY_FRAME_SETTLE_S)
+                scan = self.scan_objects(["apple"])
+                apples = [
+                    item for item in scan.metadata.get("objects", [])
+                    if item.get("name") == "apple" and item.get("object_id")
+                ] if scan.success else []
+                if apples:
+                    break
+            if not apples:
                 result.metadata["retry_scan"] = (
-                    "expected exactly one apple" if scan.success else scan.message
+                    "no apple in five fresh scans"
+                    if scan is not None and scan.success
+                    else "fresh scan failed" if scan is None else scan.message
                 )
                 break
+            # The scene module returns objects observed in this scan only, but
+            # the detector can emit overlapping apple hypotheses. They all
+            # originate from the new frame; use its first returned detection
+            # rather than treating a duplicate hypothesis as a terminal error.
             object_id = str(apples[0]["object_id"])
             attempted_ids.append(object_id)
+            self._last_grasp_leg = None
             result = super().pick_object(object_id, planning_group)
 
         if result.success:
@@ -212,8 +254,7 @@ release TCP is {C["place_tcp_m"]!r}; it is the measured position 10 cm from
 the test apple and is the only release coordinate you may use.
 
 Call scan_objects(["apple"]) and retry a no-detection up to five times. Use
-only the exact object ID from a scan containing exactly one apple. Then call
-pick_object with that ID. If it succeeds, call place_at with the supplied
+an exact apple object ID from that scan. Then call pick_object with that ID. If it succeeds, call place_at with the supplied
 release TCP, then call go_home. Here, go_home means the folded, power-off-safe
 pose. A failed grasp verification automatically rescans the apple and generates
 a fresh grasp up to two more times, then returns to that same folded pose if

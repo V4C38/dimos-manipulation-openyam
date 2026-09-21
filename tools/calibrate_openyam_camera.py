@@ -19,11 +19,11 @@ import cv2
 import numpy as np
 import pyrealsense2 as rs
 
-# RealSense color images use the optical convention (+X right, +Y down, +Z
-# forward).  DimOS publishes the camera rigid-body frame as ``camera_link``
-# (+X forward, +Y left, +Z up).  PnP estimates the former; the blueprint needs
-# the latter.
-CAMERA_LINK_FROM_COLOR_OPTICAL = np.array([
+# RealSense optical frames use +X right, +Y down, +Z forward. DimOS puts
+# ``camera_link`` at the depth imager in REP-103 body axes (+X forward, +Y
+# left, +Z up). PnP estimates tag pose in the color optical frame, so the
+# device's measured color-to-depth extrinsics are part of the mount transform.
+BODY_FROM_OPTICAL = np.array([
     [0.0, 0.0, 1.0],
     [-1.0, 0.0, 0.0],
     [0.0, -1.0, 0.0],
@@ -82,10 +82,13 @@ def main() -> None:
         parser.error("--tag-size must be positive")
 
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
-    detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
+    detector_parameters = cv2.aruco.DetectorParameters()
+    detector_parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
+    detector = cv2.aruco.ArucoDetector(dictionary, detector_parameters)
     pipeline, config = rs.pipeline(), rs.config()
     config.enable_device(args.serial)
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 6)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 6)
     profile = pipeline.start(config)
     try:
         for _ in range(30):
@@ -95,7 +98,9 @@ def main() -> None:
         corners, ids, _ = detector.detectMarkers(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
         if ids is None or len(ids) != 1:
             raise RuntimeError("exactly one AprilTag must be visible")
-        intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+        color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
+        depth_profile = profile.get_stream(rs.stream.depth).as_video_stream_profile()
+        intr = color_profile.get_intrinsics()
         half = args.tag_size / 2
         object_points = np.array(
             [[-half, half, 0], [half, half, 0], [half, -half, 0], [-half, -half, 0]],
@@ -118,8 +123,21 @@ def main() -> None:
         color_from_tag[:3, :3] = rotation
         color_from_tag[:3, 3] = tvec.reshape(3)
         world_from_color_optical = world_from_tag @ np.linalg.inv(color_from_tag)
+        # get_extrinsics_to maps color-optical coordinates into depth-optical
+        # coordinates. Convert its destination into the body axes used by the
+        # native DimOS RealSense driver's camera_link frame. librealsense stores
+        # this rotation column-major.
+        color_to_depth = color_profile.get_extrinsics_to(depth_profile)
+        depth_optical_from_color_optical = np.asarray(
+            color_to_depth.rotation, dtype=np.float64
+        ).reshape(3, 3, order="F")
         camera_link_from_color_optical = np.eye(4)
-        camera_link_from_color_optical[:3, :3] = CAMERA_LINK_FROM_COLOR_OPTICAL
+        camera_link_from_color_optical[:3, :3] = (
+            BODY_FROM_OPTICAL @ depth_optical_from_color_optical
+        )
+        camera_link_from_color_optical[:3, 3] = BODY_FROM_OPTICAL @ np.asarray(
+            color_to_depth.translation, dtype=np.float64
+        )
         world_from_camera_link = (
             world_from_color_optical @ np.linalg.inv(camera_link_from_color_optical)
         )
@@ -130,6 +148,9 @@ def main() -> None:
             camera_quaternion_xyzw=quaternion_from_rotation_matrix(
                 world_from_camera_link[:3, :3]
             ),
+            calibration_tag_size_m=args.tag_size,
+            calibration_tag_center_from_arm_axis_m=list(args.tag_in_world),
+            calibration_tag_quaternion_xyzw=list(args.tag_quaternion_xyzw),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(data, indent=2) + "\n")
