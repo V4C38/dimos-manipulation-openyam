@@ -13,6 +13,9 @@ dependencies = []
 [project.entry-points."dimos.blueprints"]
 coordinator-agentic = "openyam_coordinator_agentic.blueprints:openyam_coordinator_agentic"
 bench-planner-coordinator = "openyam_coordinator_agentic.local_bench:openyam_bench_planner_coordinator"
+bench-proposals = "openyam_coordinator_agentic.bench_pick_and_place:openyam_bench_proposals"
+bench-grasp = "openyam_coordinator_agentic.bench_pick_and_place:openyam_bench_grasp"
+bench-agentic = "openyam_coordinator_agentic.bench_pick_and_place:openyam_bench_agentic"
 
 [tool.setuptools.packages.find]
 where = ["src"]

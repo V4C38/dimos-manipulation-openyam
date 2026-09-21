@@ -1,9 +1,6 @@
+.openyam.env
 __pycache__/
 *.py[cod]
-.venv/
-build/
-dist/
 *.egg-info/
-.pytest_cache/
-*.log
 local-setup/evidence/
+mobileclip_blt.ts

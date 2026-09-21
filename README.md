@@ -23,6 +23,12 @@ remain namespaced to avoid collisions with DimOS or other installed projects.
 - `openyam-coordinator-agentic.bench-planner-coordinator`: optional planner with
   the collision boxes from `local-setup/openyam_bench.json`. This is personal
   configuration, not generic OpenYAM behavior.
+- `openyam-coordinator-agentic.bench-proposals`: fixed-camera YOLOE and
+  GraspGenX proposal stack; it does not enable arm hardware.
+- `openyam-coordinator-agentic.bench-grasp`: measured, collision-aware
+  fixed-camera pick-and-place stack for the local bench.
+- `openyam-coordinator-agentic.bench-agentic`: the same bench grasp stack plus
+  the MCP agent used by `coordinator-agentic`.
 
 The generic agentic blueprint follows the shipped xArm coordinator-agentic
 pattern: planner/coordinator plus `ManipulationSkills`, `McpServer`, and
@@ -120,3 +126,32 @@ The optional local collision boxes are incomplete. They do not model the full
 bench, people, loose objects, unmeasured fixtures, or unverified calibration
 error. They are not authorization for autonomous motion. Review physical setup,
 hardware state, and collision geometry before each run.
+
+## Measured Apple Pick-and-Place Test
+
+`tools/test_apple_pick_and_place.py` starts the guide's prompted YOLOE,
+aligned RGB-D registration, and GraspGenX stack with the same MCP-agent
+composition as `coordinator-agentic`. It uses the fixed D435i at 640×480 @ 6
+fps, the known working profile for the present USB 2.1 cable; it does not use
+colour thresholding or inferred Cartesian grasp poses.
+
+Complete the deliberately-null fields in `local-setup/openyam_bench.json`
+before running it: gripper sweep volumes, grasp-frame-to-TCP transform,
+empty-close threshold, and measured release TCP. The runner requires
+`OPENAI_API_KEY`, stops the existing DimOS coordinator, starts the agentic
+local grasp stack, and sends one fixed prompt: “Pick up the apple, then place
+it 10 cm further away on the table, then return to home.” The system prompt
+retries a prompted apple scan up to five times, performs one ranked grasp
+attempt, releases only at `place_tcp_m`, and then returns home. Set that
+measured release TCP for the intended 10 cm placement; the agent does not
+derive a release pose from a partial camera observation.
+
+```bash
+read -rs -p "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
+../dimos/.venv/bin/python tools/test_apple_pick_and_place.py
+```
+
+The key is read without echoing and is passed only to the launched agent
+process. Optionally set `OPENYAM_LLM_MODEL` or pass `--model` to select an
+available tool-calling model.
