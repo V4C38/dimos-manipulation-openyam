@@ -14,6 +14,7 @@ from dimos.agents.annotation import skill
 from dimos.agents.capabilities import CAP_MOVEMENT
 from dimos.agents.skill_result import SkillResult
 from dimos.control.coordinator import TaskConfig
+from dimos.core.core import rpc
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.hardware.sensors.camera.realsense.camera import RealSenseCamera
 from dimos.manipulation.grasping.grasp_gen_x.module import GraspGenXModule
@@ -25,20 +26,15 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 from dimos.perception.detection.detectors.yoloe import YoloePromptMode
-from dimos.perception.experimental.object_scene_registration import ObjectSceneRegistrationModule
 from dimos.protocol.tf.static_tf_publisher import StaticTfPublisher
 from dimos.robot.manipulators.common.blueprints import coordinator, trajectory_task
 from dimos.robot.manipulators.openyam.config import OPENYAM_GRIPPER_JOINT, openyam_hardware
 
 from openyam_coordinator_agentic.collision_model import model_config
 from openyam_coordinator_agentic.collision_safety import filter_static_bench_overlap, require_collision_coverage
+from openyam_coordinator_agentic.dense_scene_registration import DenseObjectSceneRegistrationModule
+from openyam_coordinator_agentic.grasp_quality import GraspQualityConfig, GraspQualityFilter
 from openyam_coordinator_agentic.local_bench_geometry import bench_obstacles
-
-# The guide specifies 848x480@15 for USB 3.  This D435i has been observed to
-# run reliably over the current USB 2.1 cable at this lower supported profile.
-USB21_WIDTH = 640
-USB21_HEIGHT = 480
-USB21_FPS = 6
 
 # Unlike the upstream observation pose ([0, 1.047, 1.047, 0, 0, 0]), zero is
 # the folded, power-off-safe configuration for this OpenYAM: joints 2 and 3
@@ -46,6 +42,7 @@ USB21_FPS = 6
 FOLDED_POWER_OFF_JOINTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 MAX_GRASP_ATTEMPTS = 3
 MAX_DETECTION_ATTEMPTS = 5
+MAX_QUALITY_RESCANS = 1
 # At 6 FPS, this waits for three post-retreat RGB-D frames before the next
 # on-request scan selects its latest aligned frame.
 RETRY_FRAME_SETTLE_S = 0.5
@@ -57,7 +54,7 @@ def bench_config() -> dict[str, Any]:
     required = (
         "camera_serial", "camera_translation_m", "camera_quaternion_xyzw", "gripper",
         "grasp_frame_to_tcp", "bench_center_m", "bench_size_m", "bench_quaternion_xyzw",
-        "camera_wall", "empty_epsilon", "place_tcp_m",
+        "camera_wall", "empty_epsilon", "place_tcp_m", "grasp_height_offset_m", "perception", "grasp_quality",
     )
     missing = [name for name in required if config.get(name) is None]
     gripper = config.get("gripper") or {}
@@ -72,6 +69,11 @@ def bench_config() -> dict[str, Any]:
 
 
 C = bench_config()
+# The D435i advertises this aligned RGB-D profile on the present USB 2.1 link.
+# Six FPS keeps its bandwidth within the observed stable operating point.
+CAMERA_WIDTH = C["perception"]["color_width"]
+CAMERA_HEIGHT = C["perception"]["color_height"]
+CAMERA_FPS = C["perception"]["fps"]
 _mount = Transform(
     translation=Vector3(*C["camera_translation_m"]),
     rotation=Quaternion(*C["camera_quaternion_xyzw"]),
@@ -105,6 +107,11 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._last_grasp_leg: tuple[PoseStamped, PoseStamped, Any] | None = None
+        quality = C["grasp_quality"]
+        self._grasp_quality = GraspQualityFilter(
+            C["gripper"], C["grasp_frame_to_tcp"], GraspQualityConfig(**quality)
+        )
+        self._last_grasp_quality: dict[str, Any] = {}
 
     @staticmethod
     def _offset_pose(pose: PoseStamped, offset: float) -> PoseStamped:
@@ -129,19 +136,101 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
         pregrasp, grasp, group = self._last_grasp_leg
         return super()._servo(grasp, pregrasp, group)
 
+    @rpc
+    def get_grasp_quality_report(self) -> dict[str, Any]:
+        """Return diagnostics from the most recent proposal-quality evaluation."""
+        return self._last_grasp_quality
+
+    def _pick_once(self, object_id: str, planning_group: str | None) -> SkillResult:
+        """Generate, gate, and execute one grasp without any perception retry policy."""
+        self._clear_selection()
+        if object_id not in self._objects:
+            return SkillResult.fail("OBJECT_NOT_DETECTED", f"Unknown object_id: {object_id}")
+        try:
+            pointcloud = self._scene.get_object_pointcloud_by_object_id(object_id)
+            if pointcloud is None:
+                return SkillResult.fail("OBJECT_NOT_DETECTED", f"No pointcloud for object_id: {object_id}")
+            candidates = self._grasp_generator.propose_grasps(pointcloud)
+        except (RuntimeError, ValueError) as exc:
+            return SkillResult.fail("GRASP_GENERATION_FAILED", str(exc))
+        candidates, self._last_grasp_quality = self._grasp_quality.filter(
+            candidates, pointcloud
+        )
+        self._grasp_candidates = candidates
+        self._manipulation.show_grasp_proposals(candidates)
+        if candidates.header.frame_id != self.config.planning_frame:
+            return SkillResult.fail(
+                "GRASP_FRAME_MISMATCH",
+                f"Expected {self.config.planning_frame}, got {candidates.header.frame_id}",
+            )
+        if not candidates.candidates:
+            failure = SkillResult.fail(
+                "INSUFFICIENT_GRASP_QUALITY", "No proposal passed geometric quality gates"
+            )
+            failure.metadata["grasp_quality"] = self._last_grasp_quality
+            return failure
+        group = self._resolve_group(planning_group)
+        if group is None:
+            return SkillResult.fail(
+                "ROBOT_NOT_FOUND", "Gripper-capable planning group is missing or ambiguous"
+            )
+        if failure := self._open_gripper(group, "pre-grasp open"):
+            return failure
+        unreachable: SkillResult | None = None
+        for rank, candidate in enumerate(candidates.candidates[: self.config.max_grasp_attempts]):
+            grasp = self._apply_yaw_policy(
+                PoseStamped(
+                    ts=candidates.header.timestamp,
+                    frame_id=candidates.header.frame_id,
+                    # Keep the fingertips above the tabletop at the learned
+                    # contact pose.  This is a bench adjustment, not another
+                    # proposal rejection or clearance check.
+                    position=candidate.pose.position + Vector3(0.0, 0.0, C["grasp_height_offset_m"]),
+                    orientation=candidate.pose.orientation,
+                ),
+                group,
+            )
+            pregrasp = self._offset_pose(grasp, self.config.pregrasp_offset)
+            failure = self._move(pregrasp, group) or self._servo(pregrasp, grasp, group)
+            if failure is not None:
+                if failure.error_code != "PLANNING_FAILED":
+                    return failure
+                unreachable = failure
+                continue
+            if failure := self._close_and_verify(group):
+                return failure
+            self._selected_object_id = object_id
+            self._selected_grasp = grasp
+            self._holding_object = True
+            if failure := self._servo(grasp, pregrasp, group):
+                return failure
+            return SkillResult.ok(
+                "Pick complete", object_id=object_id, rank=rank, score=candidate.score,
+                candidates=len(candidates.candidates), grasp_quality=self._last_grasp_quality,
+            )
+        return unreachable or SkillResult.fail("PLANNING_FAILED", "No grasp candidate was reachable")
+
     @skill(uses=[CAP_MOVEMENT])
     def pick_object(self, object_id: str, planning_group: str | None = None) -> SkillResult:
         """Pick with two camera-clear, fresh-perception retries, then park."""
         attempted_ids = [object_id]
         self._last_grasp_leg = None
-        result = super().pick_object(object_id, planning_group)
+        quality_rescans = 0
+        result = self._pick_once(object_id, planning_group)
         for _attempt in range(1, MAX_GRASP_ATTEMPTS):
-            if result.success or result.error_code != "GRASP_VERIFICATION_FAILED":
+            if result.success or result.error_code not in {
+                "GRASP_VERIFICATION_FAILED", "INSUFFICIENT_GRASP_QUALITY"
+            }:
                 break
-            back_off = self._back_off_after_failed_grasp()
-            if back_off is not None:
-                result.metadata["retry_backoff"] = back_off.message
-                break
+            if result.error_code == "GRASP_VERIFICATION_FAILED":
+                back_off = self._back_off_after_failed_grasp()
+                if back_off is not None:
+                    result.metadata["retry_backoff"] = back_off.message
+                    break
+            else:
+                quality_rescans += 1
+                if quality_rescans > MAX_QUALITY_RESCANS:
+                    break
             # scan_objects processes the latest aligned RGB-D frame. Wait for
             # frames acquired after the arm has cleared the object, rather than
             # reusing the pre-grasp image that drove the failed attempt.
@@ -170,7 +259,7 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
             object_id = str(apples[0]["object_id"])
             attempted_ids.append(object_id)
             self._last_grasp_leg = None
-            result = super().pick_object(object_id, planning_group)
+            result = self._pick_once(object_id, planning_group)
 
         if result.success:
             result.metadata["grasp_attempts"] = len(attempted_ids)
@@ -178,6 +267,9 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
 
         result.metadata["grasp_attempts"] = len(attempted_ids)
         result.metadata["attempted_object_ids"] = attempted_ids
+
+        if result.error_code == "INSUFFICIENT_GRASP_QUALITY":
+            return result
 
         group = self._resolve_group(planning_group)
         if group is None:
@@ -201,17 +293,21 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
 
 _sensing = (
     RealSenseCamera.blueprint(
-        serial_number=C["camera_serial"], width=USB21_WIDTH, height=USB21_HEIGHT, fps=USB21_FPS,
+        serial_number=C["camera_serial"], width=CAMERA_WIDTH, height=CAMERA_HEIGHT, fps=CAMERA_FPS,
         align_depth_to_color=True, enable_pointcloud=False, enable_imu=False,
     ),
-    ObjectSceneRegistrationModule.blueprint(
+    DenseObjectSceneRegistrationModule.blueprint(
         target_frame="world", detector_backend="yoloe", segmentation_backend="yolo",
         prompt_mode=YoloePromptMode.PROMPT, detect_on_request=True,
         min_detections_for_permanent=1, distance_threshold=0.05, use_aabb=True,
         max_obstacle_width=0.0,
+        object_voxel_downsample_m=C["perception"]["object_voxel_downsample_m"],
+        object_mask_erode_pixels=C["perception"]["object_mask_erode_pixels"],
+        object_outlier_neighbors=C["perception"]["object_outlier_neighbors"],
+        object_outlier_std_ratio=C["perception"]["object_outlier_std_ratio"],
     ),
     GraspGenXModule.blueprint(
-        gripper=C["gripper"], grasp_frame_to_tcp=C["grasp_frame_to_tcp"], max_candidates=20,
+        gripper=C["gripper"], grasp_frame_to_tcp=C["grasp_frame_to_tcp"], max_candidates=100,
     ),
 )
 
@@ -231,7 +327,7 @@ openyam_bench_grasp = autoconnect(
     OpenYamBenchMount.blueprint(),
     CollisionAwareBenchManipulation.blueprint(
         model=_model, world_frame="world", static_transforms=[_mount],
-        visualization={"backend": "viser"}, default_speed_scale=0.1, linear_speed_scale=0.1,
+        visualization={"backend": "viser"}, default_speed_scale=0.25, linear_speed_scale=0.25,
     ),
     OpenYamPickAndPlace.blueprint(
         planning_frame="world", max_grasp_attempts=20, yaw_policy="generated",

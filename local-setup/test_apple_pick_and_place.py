@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start one agentic, measured OpenYAM apple pick-and-place test.
+"""Start one agentic, measured OpenYAM apple pick-and-place test for this bench.
 
 The runner stops the existing coordinator, starts only the local grasp stack,
 then delivers one fixed prompt to its MCP agent. The agent runs the prompted
