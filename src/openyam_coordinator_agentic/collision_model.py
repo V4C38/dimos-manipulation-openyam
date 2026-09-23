@@ -40,7 +40,9 @@ def origin_matrix(element: ET.Element | None) -> np.ndarray:
     return matrix
 
 
-def build_collision_model(output: Path, provenance_path: Path) -> dict:
+def build_collision_model(
+    output: Path, provenance_path: Path, joint_zero_offsets_rad: dict[str, float] | None = None
+) -> dict:
     """Generate external artifacts only; reject source changes or missing proof."""
     provenance = json.loads(provenance_path.read_text())
     if provenance.get("commit") != "5d47b358bafb30c65e397f2ece506550a0db4594" or not provenance.get(
@@ -60,7 +62,17 @@ def build_collision_model(output: Path, provenance_path: Path) -> dict:
         "stroke_m": STROKE_M,
         "new_self_exclusion_pairs": [],
         "sweeps": [],
+        "joint_zero_offsets_rad": joint_zero_offsets_rad or {},
     }
+    for name, offset in (joint_zero_offsets_rad or {}).items():
+        joint = next((item for item in root.findall("joint") if item.get("name") == name), None)
+        if joint is None or joint.get("type") != "revolute" or not np.isfinite(offset):
+            raise ValueError(f"Invalid calibrated arm joint offset: {name}={offset}")
+        origin = joint.find("origin")
+        axis = np.fromstring(joint.find("axis").get("xyz"), sep=" ")
+        rpy = np.fromstring(origin.get("rpy", "0 0 0"), sep=" ")
+        rotation = Rotation.from_euler("xyz", rpy) * Rotation.from_rotvec(axis * offset)
+        origin.set("rpy", " ".join(map(str, rotation.as_euler("xyz"))))
     for name, link in links.items():
         for visual in list(link.findall("visual")):
             mesh_element = visual.find("geometry/mesh")
@@ -132,14 +144,17 @@ def build_collision_model(output: Path, provenance_path: Path) -> dict:
     path.write_text(ET.tostring(root, encoding="unicode") + "\n")
     report["model_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     report["collision_geometry_count"] = len(root.findall(".//collision"))
-    (output / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")
+    (output / "yam_collision.manifest.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 
 
-def model_config(path: Path):
-    manifest = json.loads(path.with_name("manifest.json").read_text())
+def model_config(path: Path, expected_joint_zero_offsets_rad: dict[str, float] | None = None):
+    manifest = json.loads(path.with_name(f"{path.stem}.manifest.json").read_text())
     if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["model_sha256"]:
         raise ValueError("Generated collision model no longer matches its manifest")
+    if (expected_joint_zero_offsets_rad is not None
+            and manifest.get("joint_zero_offsets_rad", {}) != expected_joint_zero_offsets_rad):
+        raise ValueError("Collision model joint offsets do not match the workspace profile")
     config = make_openyam_model_config()
     config.model = RobotModel.from_file(path).with_default_joint_acceleration_limit(2.0)
     return config
@@ -149,5 +164,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--provenance", type=Path, required=True)
+    parser.add_argument("--joint-zero-offsets", type=Path,
+                        help="JSON mapping of measured arm joint offsets in radians")
     args = parser.parse_args()
-    print(json.dumps(build_collision_model(args.output, args.provenance), indent=2))
+    offsets = json.loads(args.joint_zero_offsets.read_text()) if args.joint_zero_offsets else None
+    if offsets is not None:
+        offsets = offsets.get("joint_zero_offsets_rad", offsets)
+    print(json.dumps(build_collision_model(args.output, args.provenance, offsets), indent=2))

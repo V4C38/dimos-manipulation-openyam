@@ -1,14 +1,13 @@
 # OpenYAM Coordinator Agentic
 
-An external DimOS distribution for the generic OpenYAM planner coordinator with
-MCP agent tools. It does not modify the DimOS checkout.
+An external DimOS distribution with OpenYAM planner and grasping agents. It does
+not modify the DimOS checkout.
 
 The installed distribution is named `openyam-coordinator-agentic`. DimOS
-namespaces external blueprint entry points by distribution name, so the generic
-agentic blueprint is run as:
+namespaces external blueprint entry points by distribution name:
 
 ```bash
-dimos run openyam-coordinator-agentic.coordinator-agentic
+dimos run openyam-coordinator-agentic.openyam-planner-coordinator-agent
 ```
 
 This is deliberately not a built-in unqualified blueprint name. External
@@ -17,23 +16,16 @@ remain namespaced to avoid collisions with DimOS or other installed projects.
 
 ## Blueprints
 
-- `openyam-coordinator-agentic.coordinator-agentic`: generic OpenYAM planner,
+- `openyam-coordinator-agentic.openyam-planner-coordinator-agent`: OpenYAM planner,
   control coordinator, manipulation skills, MCP server, and MCP client agent.
-  It contains no camera calibration, scene geometry, or personal collision data.
-- `openyam-coordinator-agentic.bench-planner-coordinator`: optional planner with
-  the collision boxes from `local-setup/openyam_bench.json`. This is personal
-  configuration, not generic OpenYAM behavior.
-- `openyam-coordinator-agentic.bench-proposals`: fixed-camera YOLOE and
-  GraspGenX proposal stack; it does not enable arm hardware.
-- `openyam-coordinator-agentic.bench-grasp`: measured, collision-aware
-  fixed-camera pick-and-place stack for the local bench.
-- `openyam-coordinator-agentic.bench-agentic`: the same bench grasp stack plus
-  the MCP agent used by `coordinator-agentic`.
+  It provides motion and gripper tools, without object scanning or pick/place.
+- `openyam-coordinator-agentic.openyam-grasp-graspgenx-agent`: fixed-camera
+  RGB-D registration, GraspGenX, quality gating, pick/place, planner, MCP agent,
+  and a cockpit with camera video and agent chat. It requires an explicit
+  `OPENYAM_WORKSPACE_CONFIG` profile.
 
-The generic agentic blueprint follows the shipped xArm coordinator-agentic
-pattern: planner/coordinator plus `ManipulationSkills`, `McpServer`, and
-`McpClient`. It uses standard OpenYAM hardware and model helpers provided by
-DimOS. There is intentionally no custom automatic pick/place episode workflow.
+The two names follow the shipped xArm planner-agent and grasp-agent split. The
+grasp agent scans for object descriptions supplied in the interactive request.
 
 ## Install With uv
 
@@ -65,53 +57,65 @@ and keep the emergency stop reachable. Then run one blueprint at a time:
 
 ```bash
 cd /home/johannes/dimensional-applications/dimos
-uv run dimos --can-port can0 run openyam-coordinator-agentic.coordinator-agentic --daemon
+uv run dimos --can-port can0 run openyam-coordinator-agentic.openyam-planner-coordinator-agent --daemon
 ```
 
 The MCP server exposes DimOS manipulation skills. Agent motion is still real
 robot motion; inspect state, confirm the workspace, and use the normal DimOS
 status and stop commands.
 
-To use the personal workbench collision boxes, opt in explicitly:
+To use the calibrated workbench for grasping, set its profile explicitly:
 
 ```bash
 cd /home/johannes/dimensional-applications/dimos
-export OPENYAM_LOCAL_SETUP=/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/openyam_bench.json
-export OPENYAM_COLLISION_MODEL=/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/collision-model/yam_collision.urdf
-uv run dimos --can-port can0 run openyam-coordinator-agentic.bench-planner-coordinator --daemon
+export OPENYAM_WORKSPACE_CONFIG=/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/openyam_bench.json
+uv run dimos --can-port can0 run openyam-coordinator-agentic.openyam-grasp-graspgenx-agent --daemon
 ```
 
-## Local Setup
+Open `http://127.0.0.1:7780/` on this machine for the cockpit camera and Chat
+panel. You can also send your own prompt from another terminal with
+`../dimos/.venv/bin/dimos agent-send "..."` or run `../dimos/.venv/bin/humancli`.
+The grasp blueprint starts a local cockpit relay; `--relay-url` selects an
+existing relay instead. A browser on another machine requires a hosted relay.
 
-`local-setup/` isolates personal camera calibration and collision boxes from
-generic package source. The optional bench blueprint reads
-`OPENYAM_LOCAL_SETUP`; the generic blueprint never reads it.
+`OPENYAM_WORKSPACE_CONFIG` is the explicit path to this stack's profile. DimOS
+`--config` changes module fields after blueprint composition and cannot add the
+camera, grasp generator, or site-specific model. The workspace profile gives
+the fixed-camera transform, capture and quality settings, obstacles, gripper
+geometry, home pose, and a relative path to the collision model. The measured
+placement coordinate is retained as site data, but is not injected into the
+agent's instructions or used by the current pick flow.
 
-The single calibration/camera-evidence entry point is
-`local-setup/calibrate_workspace.py`:
+## Workspace Configuration
+
+`workspace-config/` isolates personal camera calibration and collision boxes from
+generic package source. Only the grasp blueprint reads
+`OPENYAM_WORKSPACE_CONFIG`; the planner agent never reads it.
+
+The single calibration/camera-capture entry point is
+`workspace-config/calibrate_workspace.py`:
 
 ```bash
-../dimos/.venv/bin/python local-setup/calibrate_workspace.py --source live
+../dimos/.venv/bin/python workspace-config/calibrate_workspace.py --source live
 # Inspect the generated report/candidate, then apply a fresh calibration:
-../dimos/.venv/bin/python local-setup/calibrate_workspace.py --source live --apply
+../dimos/.venv/bin/python workspace-config/calibrate_workspace.py --source live --apply
 ```
 
-Use `--mode capture` for evidence only or `--mode measure` to evaluate the saved
-calibration. See [local setup instructions](local-setup/README.md) for camera/base
-movement, plate-axis selection, direct capture, and replay. Evidence is ignored
-by Git under `local-setup/evidence/`.
+Use `--mode capture` for temporary frames only or `--mode measure` to evaluate the saved
+calibration. See [workspace configuration](workspace-config/README.md) for the
+measured assumptions. Unapplied runs go to ignored `workspace-config/temp/`;
+applied calibration records go to ignored `workspace-config/calibration-records/`.
 
 ## Safety
 
 The current shipped OpenYAM URDF contains visual meshes but **no collision
-geometry**. `auto_convert_meshes` changes file formats only. The optional bench
-planner rejects that unmodified model during construction, before module startup.
-An external manufacturer-CAD model is now available through
-`OPENYAM_COLLISION_MODEL`; it passes the model coverage gate. Do
-not use the generic agentic blueprint as a workaround: it uses the same missing
-collision model and does not contain the bench obstacles.
+geometry**. `auto_convert_meshes` changes file formats only. The grasp planner
+rejects that unmodified model during construction, before module startup.
+The measured workspace profile points to the manufacturer-CAD collision model.
+The planner-only agent uses upstream's canonical model and has none of the
+workbench collision boxes.
 
-The bench planner corrects one RoboPlan modeling issue: the fixed `bench` and
+The grasp planner corrects one RoboPlan modeling issue: the fixed `bench` and
 `camera_tripod_wall` boxes overlap, and RoboPlan otherwise treats their mutual
 overlap as a collision at every robot configuration. Only that exact static/static
 pair is filtered. This filtering does not alter either box; robot self and
@@ -129,34 +133,15 @@ bench, people, loose objects, unmeasured fixtures, or unverified calibration
 error. They are not authorization for autonomous motion. Review physical setup,
 hardware state, and collision geometry before each run.
 
-## Measured Apple Pick-and-Place Test
+## Upstream PR scope
 
-`local-setup/test_apple_pick_and_place.py` starts the guide's prompted YOLOE,
-aligned RGB-D registration, and GraspGenX stack with the same MCP-agent
-composition as `coordinator-agentic`. It uses the fixed D435i at 1280×720 @ 6
-fps, the advertised higher-resolution profile available on the present USB 2.1
-link. Its local object-cloud and proposal-quality settings are in
-`openyam_bench.json`; grasp proposals without geometric capture support or a
-plausible jaw capture are rejected before any arm motion.
-
-Complete the deliberately-null fields in `local-setup/openyam_bench.json`
-before running it: gripper sweep volumes, grasp-frame-to-TCP transform,
-empty-close threshold, and measured release TCP. The runner requires
-`OPENAI_API_KEY`, stops the existing DimOS coordinator, starts the agentic
-local grasp stack, and sends one fixed prompt: “Pick up the apple, then place
-it 10 cm further away on the table, then return to home.” The system prompt
-retries a prompted apple scan up to five times, ranks only proposals that pass
-the geometric quality gate, and releases only at `place_tcp_m` after a
-successful pick. Set that
-measured release TCP for the intended 10 cm placement; the agent does not
-derive a release pose from a partial camera observation.
-
-```bash
-read -rs -p "OpenAI API key: " OPENAI_API_KEY
-export OPENAI_API_KEY
-../dimos/.venv/bin/python local-setup/test_apple_pick_and_place.py
-```
-
-The key is read without echoing and is passed only to the launched agent
-process. Optionally set `OPENYAM_LLM_MODEL` or pass `--model` to select an
-available tool-calling model.
+The proposed DimOS PR would add the two arm blueprints under
+`dimos/robot/manipulators/openyam/blueprints/agentic.py`, with registry entries
+matching the xArm planner and GraspGenX agent names. Reusable grasping modules
+would live in DimOS package code if accepted. This repository's
+`workspace-config/openyam_bench.json`, collision meshes, and calibration records
+are site data and stay outside that PR. The generic grasp
+blueprint needs a documented workspace-profile schema or equivalent module
+configuration; the current external implementation loads the profile through
+`OPENYAM_WORKSPACE_CONFIG` before composing its modules. No upstream files have
+been changed here.

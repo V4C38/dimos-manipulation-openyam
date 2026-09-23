@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Capture, inspect, and calibrate this workspace without commanding the arm.
+"""Capture, inspect, and calibrate this workspace using the base-mounted tag.
 
 Camera pose is solved afresh from a base-fixed AprilTag. Use --help and README.md.
-Only --apply replaces the bench configuration; every run saves replayable evidence.
+Wrist calibration moves the arm and returns it home. Only --apply replaces the
+bench configuration; every run saves a replayable record.
 """
 
 from __future__ import annotations
@@ -11,7 +12,10 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import threading
+import time
+from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
@@ -123,6 +127,249 @@ def capture_live(args, serial: str) -> tuple[np.ndarray, np.ndarray, dict]:
         raise RuntimeError(f"Only {len(colors)} synchronized frames; increase --seconds")
     metadata.update(serial=serial, source="live")
     return np.stack(colors), np.stack(depths), metadata
+
+
+WRIST_DEVICE = "/dev/v4l/by-id/usb-USB_CAMERA_4K_USB_CAMERA_4K_01.00.00-video-index0"
+WRIST_START_JOINTS = [-0.2939269093, 0.9740978103, 1.0690852216,
+                      -1.4265278096, 0.1066224155, 0.0024795911]
+WRIST_POSES = [
+    WRIST_START_JOINTS,
+    [-0.85, 0.974, 1.069, -1.426, 0.107, 0.002],
+    [-0.294, 0.88, 1.15, -1.426, 0.107, 0.002],
+    [-0.294, 1.08, 0.98, -1.58, 0.28, 0.002],
+    [-0.294, 0.974, 1.069, -1.426, 0.107, 0.42],
+    [-0.294, 0.974, 1.069, -1.12, 0.107, 0.002],
+    [-0.294, 0.974, 1.069, -1.63, 0.107, 0.002],
+    [-0.55, 0.81, 1.22, -1.35, 0.18, 0.15],
+    [-0.5, 1.13, 0.91, -1.55, -0.08, -0.18],
+]
+
+
+def mcp_call(url: str, name: str, arguments: dict | None = None) -> str:
+    payload = {"jsonrpc": "2.0", "id": int(time.time() * 1000) % 2**31,
+               "method": "tools/call", "params": {"name": name, "arguments": arguments or {}}}
+    request = Request(url, data=json.dumps(payload).encode(),
+                      headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+    with urlopen(request, timeout=180) as response:
+        result = json.loads(response.read()) ["result"]
+    content = result.get("content", [])
+    message = content[0].get("text", "") if content else ""
+    try:
+        decoded = json.loads(message)
+    except json.JSONDecodeError:
+        decoded = {"success": True, "message": message}
+    if result.get("isError") or decoded.get("success") is False or decoded.get("error_code"):
+        raise RuntimeError(f"MCP {name} failed: {message}")
+    return message
+
+
+def robot_joints(message: str) -> np.ndarray:
+    match = re.search(r"PlanningGroupState\(joints=JointState\([^)]*name=\['yam_joint1'[^)]*position=\[([^]]+)\]", message)
+    if not match:
+        raise RuntimeError("Could not read the six arm joints from get_robot_state")
+    joints = np.fromstring(match.group(1), sep=",")
+    if joints.size != 6 or not np.isfinite(joints).all():
+        raise RuntimeError(f"Invalid arm joint state: {joints}")
+    return joints
+
+
+def settled_robot_joints(mcp_url: str) -> np.ndarray:
+    """Wait for the measured arm pose to stop changing before camera capture."""
+    history = []
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        history.append(robot_joints(mcp_call(mcp_url, "get_robot_state")))
+        history = history[-4:]
+        if len(history) == 4 and np.ptp(history, axis=0).max() < 0.003:
+            return history[-1]
+        time.sleep(0.2)
+    raise RuntimeError("Arm joints did not settle for wrist calibration")
+
+
+def capture_wrist_calibration(args, evidence: Path, config: dict) -> dict:
+    """Calibrate fisheye intrinsics and camera-to-tool pose from the fixed base tag."""
+    import pinocchio as pin
+
+    camera = cv2.VideoCapture(args.wrist_device, cv2.CAP_V4L2)
+    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, args.wrist_width)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, args.wrist_height)
+    if not camera.isOpened():
+        raise RuntimeError(f"Cannot open wrist camera {args.wrist_device}")
+
+    model = pin.buildModelFromUrdf(str(LOCAL / "yam_collision.urdf"))
+    data = model.createData()
+    frame_id = model.getFrameId("gripper_tip")
+    if frame_id >= model.nframes:
+        raise RuntimeError("gripper_tip frame missing from workspace collision URDF")
+    mcp_url = args.mcp_url
+    detector_params = cv2.aruco.DetectorParameters()
+    detector_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
+    detector = cv2.aruco.ArucoDetector(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11), detector_params)
+    half = config.get("calibration_tag_size_m", 0.056) / 2
+    object_corners = np.array([[-half, half, 0], [half, half, 0],
+                               [half, -half, 0], [-half, -half, 0]], dtype=np.float32)
+    tag_id = int(config.get("calibration_tag_id", 0))
+    samples, failed_moves = [], []
+    moved = False
+    try:
+        # The first commanded pose is the exact measured pose that currently sees the tag.
+        moved = True
+        message = mcp_call(mcp_url, "move_to_joints", {"joints": ",".join(map(str, WRIST_START_JOINTS))})
+        print("Wrist view 1: moved to the recorded tag-visible starting pose", flush=True)
+        for index, joints_target in enumerate(WRIST_POSES):
+            if index:
+                try:
+                    mcp_call(mcp_url, "move_to_joints", {"joints": ",".join(map(str, joints_target))})
+                except Exception as error:
+                    failed_moves.append({"view": index + 1, "joints": joints_target, "error": str(error)})
+                    print(f"Wrist view {index + 1}: motion skipped ({error})", flush=True)
+                    continue
+            settled_robot_joints(mcp_url)
+            ok, frame = False, None
+            # Drain both the UVC and sensor pipeline after motion. A fixed four
+            # reads can still return an exposure from the previous pose.
+            fresh_after = time.monotonic() + 1.0
+            while time.monotonic() < fresh_after:
+                camera.read()
+            for _ in range(3):
+                before = robot_joints(mcp_call(mcp_url, "get_robot_state"))
+                ok, frame = camera.read()
+                after = robot_joints(mcp_call(mcp_url, "get_robot_state"))
+                if ok and np.max(np.abs(after - before)) < 0.003:
+                    joints = (before + after) / 2
+                    break
+                time.sleep(0.2)
+            else:
+                raise RuntimeError(f"Arm moved during wrist view {index + 1}")
+            if not ok or frame is None:
+                continue
+            corners, ids, _ = detector.detectMarkers(frame)
+            if ids is None or list(ids.ravel()).count(tag_id) != 1:
+                cv2.imwrite(str(evidence / f"wrist-view-{index + 1:02d}-no-tag.jpg"), frame)
+                print(f"Wrist view {index + 1}: AprilTag not visible", flush=True)
+                continue
+            pixels = corners[list(ids.ravel()).index(tag_id)].reshape(4, 2).astype(np.float32)
+            if np.linalg.norm(pixels[0] - pixels[1]) < 35:
+                continue
+            image_points = pixels
+            model_joints = pin.normalize(model, joints.copy())
+            pin.forwardKinematics(model, data, model_joints)
+            pin.updateFramePlacements(model, data)
+            base_from_tool = np.eye(4)
+            base_from_tool[:3, :3] = data.oMf[frame_id].rotation
+            base_from_tool[:3, 3] = data.oMf[frame_id].translation
+            output_path = evidence / f"wrist-view-{index + 1:02d}.jpg"
+            cv2.imwrite(str(output_path), frame)
+            samples.append({"joints": joints.tolist(), "base_from_tool": base_from_tool,
+                            "object_points": object_corners, "image_points": image_points,
+                            "image_path": output_path.name})
+            print(f"Wrist view {index + 1}: tag captured", flush=True)
+    finally:
+        camera.release()
+        if moved:
+            # Always leave the arm at the configured home preset, including on calibration errors.
+            mcp_call(mcp_url, "go_home")
+            print("Arm returned to home", flush=True)
+
+    sample_record = [{"joints": sample["joints"],
+                      "base_from_tool": sample["base_from_tool"].tolist(),
+                      "tag_corners_px": sample["image_points"].tolist(),
+                      "image": sample["image_path"]} for sample in samples]
+    (evidence / "wrist-views.json").write_text(json.dumps(sample_record, indent=2) + "\n")
+    if len(samples) < 8:
+        raise RuntimeError(f"Only {len(samples)} wrist tag views captured; need at least 8 varied views")
+    return fit_wrist_calibration(args, config, samples, failed_moves)
+
+
+def fit_wrist_calibration(args, config: dict, samples: list[dict], failed_moves: list[dict]) -> dict:
+    """Fit wrist intrinsics and mounting pose to recorded arm/tag observations."""
+    size = (args.wrist_width, args.wrist_height)
+    target_tag = transform(config["calibration_tag_center_from_arm_axis_m"],
+                           config["calibration_tag_quaternion_xyzw"])
+    from scipy.optimize import least_squares
+    lower = np.r_[450, 450, size[0] * 0.4, size[1] * 0.4, -2, -2, -2, -2,
+                  [-np.pi] * 3, [-0.6] * 3]
+    upper = np.r_[1200, 1200, size[0] * 0.6, size[1] * 0.6, 2, 2, 2, 2,
+                  [np.pi] * 3, [0.6] * 3]
+
+    def fisheye_residual(parameters):
+        fx, fy, cx, cy = parameters[:4]
+        distortion = parameters[4:8]
+        tool_from_cam = np.eye(4)
+        tool_from_cam[:3, :3] = Rotation.from_rotvec(parameters[8:11]).as_matrix()
+        tool_from_cam[:3, 3] = parameters[11:14]
+        residual = []
+        for sample in samples:
+            camera_from_tag = np.linalg.inv(sample["base_from_tool"] @ tool_from_cam) @ target_tag
+            camera_points = (camera_from_tag[:3, :3] @ sample["object_points"].T).T + camera_from_tag[:3, 3]
+            if np.any(camera_points[:, 2] <= 1e-5):
+                residual.extend([1000.] * 8)
+                continue
+            xy = camera_points[:, :2] / camera_points[:, 2:3]
+            radius = np.linalg.norm(xy, axis=1)
+            theta = np.arctan(radius)
+            theta2 = theta * theta
+            theta_distorted = theta * (1 + distortion[0] * theta2 + distortion[1] * theta2**2
+                                       + distortion[2] * theta2**3 + distortion[3] * theta2**4)
+            scale = np.divide(theta_distorted, radius, out=np.ones_like(radius), where=radius > 1e-12)
+            projected = np.column_stack((fx * xy[:, 0] * scale + cx,
+                                         fy * xy[:, 1] * scale + cy))
+            residual.extend((projected - sample["image_points"]).ravel())
+        return np.asarray(residual)
+
+    # The lens FOV is a nominal lens specification; the UVC image may be cropped.
+    # Initialize from the known base tag over a range of effective image focal
+    # lengths instead of calibrating a fisheye image with a pinhole model.
+    fits = []
+    for focal in np.linspace(300, 1500, 7):
+        initial_K = np.array([[focal, 0, size[0] / 2],
+                              [0, focal, size[1] / 2], [0, 0, 1]], dtype=np.float64)
+        tool_poses = []
+        for sample in samples:
+            ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+                sample["object_points"], sample["image_points"], initial_K, None,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE)
+            if not ok:
+                break
+            camera_from_tag = np.eye(4)
+            camera_from_tag[:3, :3] = cv2.Rodrigues(rvecs[0])[0]
+            camera_from_tag[:3, 3] = tvecs[0].ravel()
+            tool_poses.append(np.linalg.inv(sample["base_from_tool"]) @ target_tag
+                              @ np.linalg.inv(camera_from_tag))
+        if len(tool_poses) != len(samples):
+            continue
+        tool_seed = mean_pose(tool_poses)
+        initial = np.r_[focal, focal, size[0] / 2, size[1] / 2, [0.] * 4,
+                        Rotation.from_matrix(tool_seed[:3, :3]).as_rotvec(),
+                        tool_seed[:3, 3]]
+        initial = np.clip(initial, lower + 1e-8, upper - 1e-8)
+        candidate = least_squares(fisheye_residual, initial, bounds=(lower, upper),
+                                  max_nfev=2500, x_scale="jac")
+        fits.append((float(np.sqrt(np.mean(np.square(fisheye_residual(candidate.x))))), candidate))
+    if not fits:
+        raise RuntimeError("Could not initialize wrist calibration from the tag views")
+    fisheye_rms, fit = min(fits, key=lambda item: item[0])
+    fx, fy, cx, cy = fit.x[:4]
+    D = fit.x[4:8]
+    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+    tool_from_camera = np.eye(4)
+    tool_from_camera[:3, :3] = Rotation.from_rotvec(fit.x[8:11]).as_matrix()
+    tool_from_camera[:3, 3] = fit.x[11:14]
+    # At 1920 px width this is under 0.25% of the image. The wider arm-angle
+    # sequence exposes residual UVC lens distortion that five near-identical
+    # views concealed.
+    if not fit.success or not np.isfinite(fisheye_rms) or fisheye_rms > 4.5:
+        raise RuntimeError(f"Wrist fisheye fit failed validation: {fisheye_rms:.3f} px RMS")
+    return {"device": args.wrist_device, "model": "opencv_fisheye",
+            "image_size": list(size), "nominal_fov_deg": args.wrist_fov_deg,
+            "camera_matrix": K.tolist(), "distortion_coefficients": D.ravel().tolist(),
+            "intrinsic_reprojection_rms_px": fisheye_rms,
+            "tool_frame": "gripper_tip", "tool_from_camera": tool_from_camera.tolist(),
+            "captured_views": len(samples),
+            "skipped_motions": failed_moves,
+            "views": [{"joints": s["joints"], "image": s["image_path"]} for s in samples]}
 
 
 def detect_poses(colors: np.ndarray, K: np.ndarray, tag_id: int, size: float) -> list[dict]:
@@ -283,8 +530,8 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=LOCAL / "openyam_bench.json")
     parser.add_argument("--mode", choices=("calibrate", "measure", "capture"), default="calibrate")
     parser.add_argument("--source", choices=("direct", "live"), default="direct")
-    parser.add_argument("--replay", type=Path, help="Evidence directory from this script; no camera needed")
-    parser.add_argument("--evidence", type=Path, help="New output directory; defaults below local-setup/evidence")
+    parser.add_argument("--replay", type=Path, help="Capture directory from this script; no camera needed")
+    parser.add_argument("--output", type=Path, help="Output directory; defaults to temp/ or calibration-records/ with --apply")
     parser.add_argument("--apply", action="store_true", help="Back up and replace the configuration")
     parser.add_argument("--serial")
     parser.add_argument("--tag-id", type=int)
@@ -293,32 +540,54 @@ def main() -> None:
     parser.add_argument("--tag-rpy-deg", type=float, nargs=3, help="Physical tag orientation relative to arm base")
     parser.add_argument("--plate-axis-pixels", type=float, nargs=4, metavar=("U1", "V1", "U2", "V2"),
                         help="Fresh image endpoints directed along a physical plate +X or +Y edge")
+    parser.add_argument("--plate-x-pixels", type=float, nargs=4, metavar=("U1", "V1", "U2", "V2"),
+                        help="Endpoints directed along plate +X; use with --plate-y-pixels")
+    parser.add_argument("--plate-y-pixels", type=float, nargs=4, metavar=("U1", "V1", "U2", "V2"),
+                        help="Endpoints directed along plate +Y; use with --plate-x-pixels")
     parser.add_argument("--plate-axis", choices=("x", "y"), default="x")
     parser.add_argument("--select-plate-axis", action="store_true", help="Select directed +X/+Y edge on fresh image")
     parser.add_argument("--base-moved", action="store_true", help="Invalidate stale scene geometry unless --scene-transform supplied")
     parser.add_argument("--scene-transform", type=Path, help="JSON 4x4 measured old-world -> new-world transform for static scene")
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=6)
     parser.add_argument("--samples", type=int, default=36)
     parser.add_argument("--seconds", type=float, default=8, help="Live capture duration")
+    parser.add_argument("--skip-wrist", action="store_true", help="Calibrate only the fixed RGB-D camera")
+    parser.add_argument("--wrist-device", default=WRIST_DEVICE, help="V4L2 wrist camera device")
+    parser.add_argument("--wrist-width", type=int, default=1920)
+    parser.add_argument("--wrist-height", type=int, default=1080)
+    parser.add_argument("--wrist-fov-deg", type=float, default=150.0,
+                        help="Nominal diagonal FOV used only as an initial fisheye calibration estimate")
+    parser.add_argument("--mcp-url", default="http://127.0.0.1:9990/mcp",
+                        help="Running blueprint MCP endpoint used to move/read the arm")
     args = parser.parse_args()
     if args.apply and args.mode != "calibrate":
         parser.error("--apply requires --mode calibrate")
-    if args.samples < 12 or not 0 < args.seconds <= 60 or min(args.width, args.height, args.fps) <= 0:
+    if (args.samples < 12 or not 0 < args.seconds <= 60
+            or min(args.width, args.height, args.fps, args.wrist_width, args.wrist_height) <= 0
+            or not 100 <= args.wrist_fov_deg < 179):
         parser.error("Use >=12 samples, 0<seconds<=60, and positive stream parameters")
-    if args.plate_axis_pixels and args.select_plate_axis:
-        parser.error("Choose either numeric or interactive plate-axis selection")
-    if (args.plate_axis_pixels or args.select_plate_axis) and args.mode != "calibrate":
+    plate_pair = args.plate_x_pixels is not None or args.plate_y_pixels is not None
+    if (args.plate_x_pixels is None) != (args.plate_y_pixels is None):
+        parser.error("Supply both --plate-x-pixels and --plate-y-pixels")
+    if sum(bool(value) for value in (args.plate_axis_pixels, args.select_plate_axis, plate_pair)) > 1:
+        parser.error("Choose one plate-reference method")
+    if (args.plate_axis_pixels or args.select_plate_axis or plate_pair) and args.mode != "calibrate":
         parser.error("Plate reference selection requires --mode calibrate")
     if (args.base_moved or args.scene_transform) and args.mode != "calibrate":
         parser.error("Scene updates require --mode calibrate")
     config_text = args.config.read_text()
     config = json.loads(config_text)
     serial = args.serial or config["camera_serial"]
-    evidence = args.evidence or LOCAL / "evidence" / datetime.now(timezone.utc).strftime("calibration-%Y%m%dT%H%M%S-%fZ")
+    output_root = LOCAL / ("calibration-records" if args.apply else "temp")
+    evidence = args.output or output_root / datetime.now(timezone.utc).strftime("calibration-%Y%m%dT%H%M%S-%fZ")
     evidence.mkdir(parents=True, exist_ok=False)
     (evidence / "config-before.json").write_text(config_text)
+    wrist = None
+    if args.mode == "calibrate" and not args.skip_wrist:
+        wrist = capture_wrist_calibration(args, evidence, config)
+        config["wrist_camera_calibration"] = wrist
     if args.replay:
         metadata = json.loads((args.replay / "capture.json").read_text())
         with np.load(args.replay / "capture.npz", allow_pickle=False) as capture:
@@ -341,7 +610,7 @@ def main() -> None:
     quaternion = config.get("calibration_tag_quaternion_xyzw")
     if args.tag_rpy_deg is not None:
         quaternion = Rotation.from_euler("xyz", args.tag_rpy_deg, degrees=True).as_quat().tolist()
-    if quaternion is None and not (args.plate_axis_pixels or args.select_plate_axis):
+    if quaternion is None and not (args.plate_axis_pixels or args.select_plate_axis or plate_pair):
         raise ValueError("Supply --tag-rpy-deg or select a plate axis to establish physical tag orientation")
     target = transform(center, quaternion or [0, 0, 0, 1])
     K = np.asarray(metadata["K"], dtype=float)
@@ -349,12 +618,19 @@ def main() -> None:
     # Every third frame is held out from the fit, preserving coverage over time.
     train, holdout = [r for i, r in enumerate(rows) if i % 3], rows[::3]
     plate = None
-    if args.plate_axis_pixels or args.select_plate_axis:
+    if args.plate_axis_pixels or args.select_plate_axis or plate_pair:
         row = train[-1]
         frame = colors[row["frame"]]
         cv2.imwrite(str(evidence / "plate-reference.png"), frame)
-        pixels = select_axis(frame, args.plate_axis) if args.select_plate_axis else args.plate_axis_pixels
-        target[:3, :3], plate = plate_reference(row["pose"], frame, K, pixels, args.plate_axis)
+        if plate_pair:
+            x_rotation, x_plate = plate_reference(row["pose"], frame, K, args.plate_x_pixels, "x")
+            y_rotation, y_plate = plate_reference(row["pose"], frame, K, args.plate_y_pixels, "y")
+            disagreement = float(np.degrees(Rotation.from_matrix(x_rotation.T @ y_rotation).magnitude()))
+            target[:3, :3] = Rotation.from_matrix(np.stack([x_rotation, y_rotation])).mean().as_matrix()
+            plate = {"axes": [x_plate, y_plate], "axis_disagreement_deg": disagreement}
+        else:
+            pixels = select_axis(frame, args.plate_axis) if args.select_plate_axis else args.plate_axis_pixels
+            target[:3, :3], plate = plate_reference(row["pose"], frame, K, pixels, args.plate_axis)
     observed = mean_pose([r["pose"] for r in train])
     candidate_color = target @ np.linalg.inv(observed)
     candidate_link = candidate_color @ np.linalg.inv(np.asarray(metadata["link_from_color"]))
@@ -368,9 +644,11 @@ def main() -> None:
               "evaluated_world_from_camera_link": (previous_link if args.mode == "measure" else candidate_link).tolist(),
               "before": residuals(holdout, depths, K, previous_color, target),
               "validation": validation, "plate_reference": plate,
+              "wrist_camera_calibration": wrist,
               "per_frame": [{**r, "pose": r["pose"].tolist()} for r in rows],
               "limitation": "Held-out frames validate repeatability at the tag, not absolute workspace/arm accuracy"}
-    stable = validation["position_rms_m"] <= 0.005 and validation["orientation_rms_deg"] <= 2
+    stable = (validation["position_rms_m"] <= 0.005 and validation["orientation_rms_deg"] <= 2
+              and (not plate_pair or plate["axis_disagreement_deg"] <= 1))
     report["fit_stable"] = stable
     if args.mode == "calibrate":
         config.update(camera_serial=serial, camera_translation_m=candidate_link[:3, 3].tolist(),
@@ -378,21 +656,28 @@ def main() -> None:
                       calibration_tag_id=tag_id, calibration_tag_size_m=size,
                       calibration_tag_center_from_arm_axis_m=list(center),
                       calibration_tag_quaternion_xyzw=Rotation.from_matrix(target[:3, :3]).as_quat().tolist())
+        if wrist:
+            config["wrist_camera_calibration"] = wrist
         if plate:
             config["calibration_reference_notes"] = (
+                "Tag orientation derived from two mechanically aligned plate edges; " if plate_pair else
                 "Tag orientation derived from a directed mechanically aligned plate edge; "
+            ) + (
                 "assumes tag/plate coplanar and parallel to the robot XY plane. "
                 "Valid while tag is rigidly fixed relative to arm base.")
         elif args.tag_rpy_deg is not None:
             config["calibration_reference_notes"] = "Operator-supplied physical tag-to-base orientation"
         report["scene_status"] = update_scene(config, args)
-        config["workspace_calibration"] = {"evidence": str(evidence.resolve()),
+        config["workspace_calibration"] = {"record_path": str(evidence.resolve()),
                                            "scene_status": report["scene_status"],
-                                           "method": "Multi-frame absolute AprilTag pose, held-out validation"}
+                                           "method": ("Fixed RGB-D AprilTag + wrist fisheye and hand-eye calibration"
+                                                      if wrist else
+                                                      "Multi-frame AprilTag pose, two plate axes, held-out validation"
+                                                      if plate_pair else "Multi-frame absolute AprilTag pose, held-out validation")}
         (evidence / "candidate-config.json").write_text(json.dumps(config, indent=2) + "\n")
     (evidence / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({k: v for k, v in report.items() if k != "per_frame"}, indent=2))
-    print(f"Evidence: {evidence}")
+    print(f"Capture/record: {evidence}")
     if args.apply:
         if not stable:
             raise RuntimeError("Unstable calibration; configuration not replaced (see report)")
@@ -402,7 +687,7 @@ def main() -> None:
         with temporary.open("x") as stream:
             stream.write(json.dumps(config, indent=2) + "\n")
         temporary.replace(args.config)
-        print("Configuration updated; restart the stack through its normal launch to load it. No arm commands sent.")
+        print("Configuration updated; restart the stack through its normal launch to load it.")
 
 
 if __name__ == "__main__":

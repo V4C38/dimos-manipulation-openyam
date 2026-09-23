@@ -2,5 +2,6 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-local-setup/evidence/
+workspace-config/calibration-records/
+workspace-config/temp/
 mobileclip_blt.ts

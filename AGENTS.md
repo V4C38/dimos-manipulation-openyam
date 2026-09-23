@@ -9,13 +9,12 @@ Perform explicitly requested actions directly. Do not add or run unsolicited saf
 ## Project Structure & Module Organization
 
 - `src/openyam_coordinator_agentic/`: generic agentic blueprint, optional bench planner, collision model generation, and geometry helpers.
-- `tools/`: camera capture, calibration, diagnostics, model audits, and `test_collision_safety.py`.
-- `local-setup/`: personal bench configuration, collision assets, calibration, and evidence. Keep these separate from generic package behavior; capture directories under `local-setup/evidence/` are Git-ignored.
+- `workspace-config/`: personal bench configuration, collision assets, and calibration. Keep these separate from generic package behavior; `temp/` and `calibration-records/` are Git-ignored.
 - `pyproject.toml`: setuptools packaging and `dimos.blueprints` entry points. Preserve distribution-qualified blueprint names.
 
 ## Setup Reference
 
-Consult [OpenYAM_dimOS_Setup_Guide.pdf](OpenYAM_dimOS_Setup_Guide.pdf) for applicable setup, camera, calibration, and agent integration details. Use `README.md` for repository commands and `local-setup/CONTINUATION_30CM.md` for recorded local state. Treat documented historical outcomes as history, not current hardware observations. Adapt upstream installation instructions to respect the repository boundary above.
+Use `README.md` for repository commands and `workspace-config/README.md` for measured local assumptions. Treat documented historical outcomes as history, not current hardware observations.
 
 ## Development & Test Commands
 
@@ -23,11 +22,10 @@ Run from this repository using the existing adjacent runtime:
 
 ```bash
 ../dimos/.venv/bin/dimos list
-../dimos/.venv/bin/dimos --can-port can0 run openyam-coordinator-agentic.coordinator-agentic --daemon
-../dimos/.venv/bin/python -m pytest tools/test_collision_safety.py -q
+../dimos/.venv/bin/dimos --can-port can0 run openyam-coordinator-agentic.openyam-planner-coordinator-agent --daemon
 ```
 
-These list blueprints, start the hardware-backed agentic blueprint, and run offline collision regressions, respectively. Start hardware only when requested. Run tests when requested, selecting relevant cases with `-k`; no coverage threshold is configured. Use `uv` rather than plain `pip` for dependency tooling, without modifying the base installation.
+These list blueprints and start the hardware-backed agentic blueprint, respectively. Start hardware only when requested. Run tests only when requested. Use `uv` rather than plain `pip` for dependency tooling, without modifying the base installation.
 
 ## Coding Style & Naming
 

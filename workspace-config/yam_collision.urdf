@@ -44,17 +44,17 @@
     </collision>
     <collision name="tip_left_sweep_0">
       <geometry>
-        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/collision-model/tip_left_sweep_0.obj" />
+        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/collision-meshes/tip_left_sweep_0.obj" />
       </geometry>
     </collision>
     <collision name="tip_left_sweep_1">
       <geometry>
-        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/collision-model/tip_left_sweep_1.obj" />
+        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/collision-meshes/tip_left_sweep_1.obj" />
       </geometry>
     </collision>
     <collision name="tip_left_sweep_2">
       <geometry>
-        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/collision-model/tip_left_sweep_2.obj" />
+        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/collision-meshes/tip_left_sweep_2.obj" />
       </geometry>
     </collision>
     <visual>
@@ -68,17 +68,17 @@
     </visual>
     <collision name="tip_right_sweep_0">
       <geometry>
-        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/collision-model/tip_right_sweep_0.obj" />
+        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/collision-meshes/tip_right_sweep_0.obj" />
       </geometry>
     </collision>
     <collision name="tip_right_sweep_1">
       <geometry>
-        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/collision-model/tip_right_sweep_1.obj" />
+        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/collision-meshes/tip_right_sweep_1.obj" />
       </geometry>
     </collision>
     <collision name="tip_right_sweep_2">
       <geometry>
-        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/local-setup/collision-model/tip_right_sweep_2.obj" />
+        <mesh filename="/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/collision-meshes/tip_right_sweep_2.obj" />
       </geometry>
     </collision>
     <visual>

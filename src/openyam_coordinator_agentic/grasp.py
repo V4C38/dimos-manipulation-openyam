@@ -1,10 +1,11 @@
-"""Guide-aligned external OpenYAM apple pick-and-place blueprints."""
+"""OpenYAM fixed-camera grasping configured by an explicit workspace profile."""
 
 from __future__ import annotations
 
 import json
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -29,17 +30,14 @@ from dimos.perception.detection.detectors.yoloe import YoloePromptMode
 from dimos.protocol.tf.static_tf_publisher import StaticTfPublisher
 from dimos.robot.manipulators.common.blueprints import coordinator, trajectory_task
 from dimos.robot.manipulators.openyam.config import OPENYAM_GRIPPER_JOINT, openyam_hardware
+from dimos.web.cockpit import Chat, Row, Video, cockpit
 
 from openyam_coordinator_agentic.collision_model import model_config
 from openyam_coordinator_agentic.collision_safety import filter_static_bench_overlap, require_collision_coverage
 from openyam_coordinator_agentic.dense_scene_registration import DenseObjectSceneRegistrationModule
 from openyam_coordinator_agentic.grasp_quality import GraspQualityConfig, GraspQualityFilter
-from openyam_coordinator_agentic.local_bench_geometry import bench_obstacles
+from openyam_coordinator_agentic.workspace_geometry import workspace_obstacles
 
-# Unlike the upstream observation pose ([0, 1.047, 1.047, 0, 0, 0]), zero is
-# the folded, power-off-safe configuration for this OpenYAM: joints 2 and 3
-# are at their lower limits.  Keep this local to the calibrated bench setup.
-FOLDED_POWER_OFF_JOINTS = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 MAX_GRASP_ATTEMPTS = 3
 MAX_DETECTION_ATTEMPTS = 5
 MAX_QUALITY_RESCANS = 1
@@ -48,13 +46,18 @@ MAX_QUALITY_RESCANS = 1
 RETRY_FRAME_SETTLE_S = 0.5
 
 
-def bench_config() -> dict[str, Any]:
-    """Load measured local values, rejecting every guide-required null."""
-    config = json.loads(Path(os.environ["OPENYAM_BENCH_CONFIG"]).read_text(encoding="utf-8"))
+def workspace_config() -> dict[str, Any]:
+    """Load a measured workspace profile for the grasping stack."""
+    profile = os.environ.get("OPENYAM_WORKSPACE_CONFIG")
+    if not profile:
+        raise ValueError("Set OPENYAM_WORKSPACE_CONFIG to a measured workspace JSON file")
+    path = Path(profile).resolve()
+    config = json.loads(path.read_text(encoding="utf-8"))
     required = (
         "camera_serial", "camera_translation_m", "camera_quaternion_xyzw", "gripper",
         "grasp_frame_to_tcp", "bench_center_m", "bench_size_m", "bench_quaternion_xyzw",
-        "camera_wall", "empty_epsilon", "place_tcp_m", "grasp_height_offset_m", "perception", "grasp_quality",
+        "camera_wall", "empty_epsilon", "grasp_height_offset_m", "perception", "grasp_quality",
+        "collision_model", "home_joints",
     )
     missing = [name for name in required if config.get(name) is None]
     gripper = config.get("gripper") or {}
@@ -64,13 +67,12 @@ def bench_config() -> dict[str, Any]:
         ) if gripper.get(name) is None
     )
     if missing:
-        raise ValueError("Complete measured OpenYAM bench fields: " + ", ".join(missing))
+        raise ValueError("Complete measured OpenYAM workspace fields: " + ", ".join(missing))
+    config["collision_model"] = str((path.parent / config["collision_model"]).resolve())
     return config
 
 
-C = bench_config()
-# The D435i advertises this aligned RGB-D profile on the present USB 2.1 link.
-# Six FPS keeps its bandwidth within the observed stable operating point.
+C = workspace_config()
 CAMERA_WIDTH = C["perception"]["color_width"]
 CAMERA_HEIGHT = C["perception"]["color_height"]
 CAMERA_FPS = C["perception"]["fps"]
@@ -81,12 +83,12 @@ _mount = Transform(
 )
 
 
-class OpenYamBenchMount(StaticTfPublisher):
+class OpenYamWorkspaceMount(StaticTfPublisher):
     def transforms(self):
         return [_mount]
 
 
-class CollisionAwareBenchManipulation(ManipulationModule):
+class CollisionAwareWorkspaceManipulation(ManipulationModule):
     """Planner containing the measured bench and camera-side obstacle."""
 
     def __init__(self, **kwargs: Any) -> None:
@@ -96,7 +98,7 @@ class CollisionAwareBenchManipulation(ManipulationModule):
     def _initialize_planning(self) -> None:
         super()._initialize_planning()
         assert self._world_monitor is not None
-        for obstacle in bench_obstacles(C):
+        for obstacle in workspace_obstacles(C):
             self._world_monitor.add_obstacle(obstacle)
         filter_static_bench_overlap(self._world_monitor.world)
 
@@ -130,11 +132,23 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
         return super()._servo(start, end, planning_group)
 
     def _back_off_after_failed_grasp(self) -> SkillResult | None:
-        """Reverse the just-completed straight approach to clear the camera view."""
+        """Retreat, then clear the fixed camera's view before rescanning."""
         if self._last_grasp_leg is None:
             return SkillResult.fail("RETRY_BACKOFF_FAILED", "No completed grasp approach to reverse")
         pregrasp, grasp, group = self._last_grasp_leg
-        return super()._servo(grasp, pregrasp, group)
+        reverse_failure = super()._servo(grasp, pregrasp, group)
+        state = self._manipulation.get_state().groups.get(group)
+        target = None if state is None else state.joint_presets.get("home")
+        if target is None:
+            return SkillResult.fail("RETRY_BACKOFF_FAILED", "Configured home pose is unavailable")
+        plan = self._manipulation.plan_to_joints({group: target})
+        if not plan.succeeded:
+            detail = reverse_failure.message if reverse_failure else plan.message
+            return SkillResult.fail("RETRY_BACKOFF_FAILED", f"Could not clear camera view: {detail}")
+        execution = self._manipulation.execute(blocking=True)
+        if not execution.succeeded:
+            return SkillResult.fail("RETRY_BACKOFF_FAILED", f"Could not clear camera view: {execution.message}")
+        return None
 
     @rpc
     def get_grasp_quality_report(self) -> dict[str, Any]:
@@ -234,29 +248,33 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
             # scan_objects processes the latest aligned RGB-D frame. Wait for
             # frames acquired after the arm has cleared the object, rather than
             # reusing the pre-grasp image that drove the failed attempt.
-            apples: list[dict[str, Any]] = []
+            object_name = self._objects.get(object_id, {}).get("name")
+            if not object_name:
+                result.metadata["retry_scan"] = "object label unavailable"
+                break
+            matches: list[dict[str, Any]] = []
             scan: SkillResult | None = None
             for _scan_attempt in range(MAX_DETECTION_ATTEMPTS):
                 time.sleep(RETRY_FRAME_SETTLE_S)
-                scan = self.scan_objects(["apple"])
-                apples = [
+                scan = self.scan_objects([object_name])
+                matches = [
                     item for item in scan.metadata.get("objects", [])
-                    if item.get("name") == "apple" and item.get("object_id")
+                    if item.get("name") == object_name and item.get("object_id")
                 ] if scan.success else []
-                if apples:
+                if matches:
                     break
-            if not apples:
+            if not matches:
                 result.metadata["retry_scan"] = (
-                    "no apple in five fresh scans"
+                    f"no {object_name} in five fresh scans"
                     if scan is not None and scan.success
                     else "fresh scan failed" if scan is None else scan.message
                 )
                 break
             # The scene module returns objects observed in this scan only, but
-            # the detector can emit overlapping apple hypotheses. They all
+            # the detector can emit overlapping hypotheses. They all
             # originate from the new frame; use its first returned detection
             # rather than treating a duplicate hypothesis as a terminal error.
-            object_id = str(apples[0]["object_id"])
+            object_id = str(matches[0]["object_id"])
             attempted_ids.append(object_id)
             self._last_grasp_leg = None
             result = self._pick_once(object_id, planning_group)
@@ -278,7 +296,7 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
         state = self._manipulation.get_state().groups.get(group)
         target = None if state is None else state.joint_presets.get("home")
         if target is None:
-            result.metadata["folded_return"] = "skipped: folded home preset unavailable"
+            result.metadata["folded_return"] = "skipped: configured home preset unavailable"
             return result
         plan = self._manipulation.plan_to_joints({group: target})
         if not plan.succeeded:
@@ -307,27 +325,29 @@ _sensing = (
         object_outlier_std_ratio=C["perception"]["object_outlier_std_ratio"],
     ),
     GraspGenXModule.blueprint(
-        gripper=C["gripper"], grasp_frame_to_tcp=C["grasp_frame_to_tcp"], max_candidates=100,
+        gripper=C["gripper"], grasp_frame_to_tcp=C["grasp_frame_to_tcp"],
+        max_candidates=C["grasp_quality"]["max_candidates"],
     ),
 )
 
-openyam_bench_proposals = autoconnect(
-    *_sensing, OpenYamBenchMount.blueprint(),
-).global_config(n_workers=4)
-
-_model = model_config(Path(os.environ["OPENYAM_COLLISION_MODEL"])).model_copy(
+_model = model_config(Path(C["collision_model"])).model_copy(
     update={
         "base_pose": PoseStamped(frame_id="world"),
-        "home_joints": list(FOLDED_POWER_OFF_JOINTS),
+        "home_joints": list(C["home_joints"]),
     }
 )
 _hardware = openyam_hardware()
-openyam_bench_grasp = autoconnect(
+if control := C.get("arm_control"):
+    _hardware = replace(
+        _hardware,
+        wb_config=replace(_hardware.wb_config, kp=tuple(control["kp"]), kd=tuple(control["kd"])),
+    )
+_openyam_grasp_stack = autoconnect(
     *_sensing,
-    OpenYamBenchMount.blueprint(),
-    CollisionAwareBenchManipulation.blueprint(
+    OpenYamWorkspaceMount.blueprint(),
+    CollisionAwareWorkspaceManipulation.blueprint(
         model=_model, world_frame="world", static_transforms=[_mount],
-        visualization={"backend": "viser"}, default_speed_scale=0.25, linear_speed_scale=0.25,
+        visualization={"backend": "viser"}, default_speed_scale=0.35, linear_speed_scale=0.35,
     ),
     OpenYamPickAndPlace.blueprint(
         planning_frame="world", max_grasp_attempts=20, yaw_policy="generated",
@@ -339,32 +359,27 @@ openyam_bench_grasp = autoconnect(
             name="openyam_gripper", type="gripper", joint_names=[OPENYAM_GRIPPER_JOINT], priority=20,
         )],
     ),
-).global_config(n_workers=6)
+)
 
-OPENYAM_BENCH_AGENT_PROMPT = f"""\
-You control one fixed-camera OpenYAM manipulation test.
+OPENYAM_GRASP_AGENT_PROMPT = """\
+You control an OpenYAM arm with a calibrated fixed RGB-D camera and a gripper.
 
-The only requested episode is: pick up the apple, place it 10 cm further away
-on the table, then return home.  For this calibrated bench, the supplied
-release TCP is {C["place_tcp_m"]!r}; it is the measured position 10 cm from
-the test apple and is the only release coordinate you may use.
-
-Call scan_objects(["apple"]) and retry a no-detection up to five times. Use
-an exact apple object ID from that scan. Then call pick_object with that ID. If it succeeds, call place_at with the supplied
-release TCP, then call go_home. Here, go_home means the folded, power-off-safe
-pose. A failed grasp verification automatically rescans the apple and generates
-a fresh grasp up to two more times, then returns to that same folded pose if
-all three attempts fail. Do not issue your own retries, reset faults, choose a
-different object, infer coordinates, or open the gripper except through the
-successful place_at call. Report the final failure and stop.
+For an object pick, call scan_objects with the requested object description,
+then pick_object with an exact object ID from that scan. The pick tool generates
+and checks grasp proposals. It handles fresh-scan retries after a failed grasp.
+Only call place_at after a successful pick and when the user supplied explicit
+world-frame TCP coordinates. Do not infer a release coordinate from the image.
+Keep the gripper closed while carrying an object. Do not issue your own pick
+retries after a terminal failure. Report the failure and stop.
 """
 
-openyam_bench_agentic = autoconnect(
-    openyam_bench_grasp,
+openyam_grasp_graspgenx_agent = autoconnect(
+    _openyam_grasp_stack,
     ManipulationSkills.blueprint(),
     McpServer.blueprint(),
     McpClient.blueprint(
-        system_prompt=OPENYAM_BENCH_AGENT_PROMPT,
+        system_prompt=OPENYAM_GRASP_AGENT_PROMPT,
         model=os.environ.get("OPENYAM_LLM_MODEL", McpClientConfig().model),
     ),
-).global_config(n_workers=6)
+    cockpit(layout=Row(Video("color_image", title="Workspace camera"), Chat(title="Agent chat"))),
+).global_config(n_workers=8)

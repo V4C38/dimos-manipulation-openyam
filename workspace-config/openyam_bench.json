@@ -1,0 +1,336 @@
+{
+  "camera_serial": "261622074549",
+  "camera_translation_m": [
+    -0.27574837201285424,
+    -0.24621957271699185,
+    0.5075832065895843
+  ],
+  "camera_quaternion_xyzw": [
+    -0.03412300207713528,
+    0.5806667920564341,
+    -0.006204070569611978,
+    0.8134022417233069
+  ],
+  "perception": {
+    "color_width": 1280,
+    "color_height": 720,
+    "fps": 6,
+    "object_voxel_downsample_m": 0.002,
+    "object_mask_erode_pixels": 1,
+    "object_outlier_neighbors": 12,
+    "object_outlier_std_ratio": 0.75
+  },
+  "grasp_quality": {
+    "min_object_points": 150,
+    "voxel_size_m": 0.003,
+    "min_occupied_voxels": 24,
+    "min_capture_points": 50,
+    "min_closing_span_m": 0.006,
+    "top_max_tilt_deg": 45.0,
+    "side_max_tilt_deg": 30.0,
+    "side_grasp_score_scale": 0.5,
+    "max_candidates": 100
+  },
+  "grasp_height_offset_m": 0.012,
+  "arm_control": {
+    "kp": [
+      120.0,
+      120.0,
+      160.0,
+      40.0,
+      25.0,
+      25.0,
+      0.0
+    ],
+    "kd": [
+      5.0,
+      5.0,
+      5.0,
+      2.0,
+      2.0,
+      2.0,
+      0.0
+    ]
+  },
+  "collision_model": "yam_collision.urdf",
+  "home_joints": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "calibration_tag_center_from_arm_axis_m": [
+    0.0,
+    -0.07,
+    0.0
+  ],
+  "calibration_tag_size_m": 0.056,
+  "calibration_tag_id": 0,
+  "calibration_tag_quaternion_xyzw": [
+    2.3552715363226156e-17,
+    4.440892098500625e-16,
+    -0.0043144282166670085,
+    0.9999906928112697
+  ],
+  "calibration_reference_notes": "Tag orientation derived from two mechanically aligned plate edges; assumes tag/plate coplanar and parallel to the robot XY plane. Valid while tag is rigidly fixed relative to arm base.",
+  "gripper": {
+    "extents_open": [
+      0.0939,
+      0.033927,
+      0.076002
+    ],
+    "offset_open": [
+      0.0,
+      0.0,
+      0.061999
+    ],
+    "extents_half_open": [
+      0.04695,
+      0.033927,
+      0.076002
+    ],
+    "offset_half_open": [
+      0.0,
+      0.0,
+      0.061999
+    ],
+    "fingertip_depth": 0.1,
+    "family": "parallel_2f"
+  },
+  "grasp_frame_to_tcp": [
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      -1.0,
+      0.1
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "bench_center_m": [
+    -0.0662944728919693,
+    -0.2840029641493582,
+    -0.045
+  ],
+  "bench_size_m": [
+    0.517155761181845,
+    0.7070289105623022,
+    0.05
+  ],
+  "bench_quaternion_xyzw": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "empty_epsilon": 0.1,
+  "place_tcp_m": [
+    0.00785,
+    -0.46473,
+    0.02568
+  ],
+  "camera_wall": {
+    "center_m": [
+      -0.7759555,
+      -0.2540255,
+      -0.2235476
+    ],
+    "size_m": [
+      1.0,
+      0.3,
+      1.5529048
+    ],
+    "quaternion_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "workspace_calibration": {
+    "record_path": "/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/calibration-records/calibration-20260923T195147-827182Z",
+    "scene_status": "Static scene unchanged; camera mount calibration only",
+    "method": "Fixed RGB-D AprilTag + wrist fisheye and hand-eye calibration"
+  },
+  "wrist_camera_calibration": {
+    "device": "/dev/v4l/by-id/usb-USB_CAMERA_4K_USB_CAMERA_4K_01.00.00-video-index0",
+    "model": "opencv_fisheye",
+    "image_size": [
+      1920,
+      1080
+    ],
+    "nominal_fov_deg": 150.0,
+    "camera_matrix": [
+      [
+        836.5564456562691,
+        0.0,
+        672.7678316705692
+      ],
+      [
+        0.0,
+        822.4715610542793,
+        515.2956071964832
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "distortion_coefficients": [
+      -0.38699907247617366,
+      0.8195423915322206,
+      -0.6267652759572265,
+      0.14501886081979834
+    ],
+    "intrinsic_reprojection_rms_px": 3.933695451975355,
+    "tool_frame": "gripper_tip",
+    "tool_from_camera": [
+      [
+        0.24714506451039525,
+        0.7157131502507666,
+        0.6532028809231293,
+        -0.08217415361507587
+      ],
+      [
+        0.942297459752795,
+        -0.020418986057767624,
+        -0.3341535011814214,
+        -0.01623103244972707
+      ],
+      [
+        -0.22582031447941542,
+        0.698095804002929,
+        -0.6794611350194518,
+        0.028410927186842183
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "captured_views": 9,
+    "skipped_motions": [],
+    "views": [
+      {
+        "joints": [
+          -0.29774166475928965,
+          0.9718089570458535,
+          1.0746166170748452,
+          -1.4108873121232932,
+          0.10509651331349623,
+          0.008201724269474298
+        ],
+        "image": "wrist-view-01.jpg"
+      },
+      {
+        "joints": [
+          -0.8459220263981084,
+          0.9710460059510186,
+          1.0744258793011365,
+          -1.4074540321965365,
+          0.10509651331349623,
+          0.008201724269474298
+        ],
+        "image": "wrist-view-02.jpg"
+      },
+      {
+        "joints": [
+          -0.29774166475928965,
+          0.8733882658121619,
+          1.1415655756466005,
+          -1.4070725566491191,
+          0.10528725108720494,
+          0.008201724269474298
+        ],
+        "image": "wrist-view-03.jpg"
+      },
+      {
+        "joints": [
+          -0.29736018921187224,
+          1.0732814526588843,
+          0.9855420767528802,
+          -1.4551384756237127,
+          0.28057526512550623,
+          0.007820248722056888
+        ],
+        "image": "wrist-view-04.jpg"
+      },
+      {
+        "joints": [
+          -0.29774166475928965,
+          0.9718089570458535,
+          1.0603112840466924,
+          -1.4112687876707106,
+          0.11043717097733996,
+          0.41447318226901686
+        ],
+        "image": "wrist-view-05.jpg"
+      },
+      {
+        "joints": [
+          -0.29736018921187224,
+          0.9706645304036012,
+          1.0603112840466924,
+          -1.1060883497367815,
+          0.11043717097733996,
+          0.008010986495765593
+        ],
+        "image": "wrist-view-06.jpg"
+      },
+      {
+        "joints": [
+          -0.29755092698558094,
+          0.9664682993820097,
+          1.0603112840466924,
+          -1.456282902265965,
+          0.11043717097733996,
+          0.007820248722056888
+        ],
+        "image": "wrist-view-07.jpg"
+      },
+      {
+        "joints": [
+          -0.5468451972228578,
+          0.8024338139925238,
+          1.2113756008239864,
+          -1.3349736781872288,
+          0.1787212939650562,
+          0.1451514457923242
+        ],
+        "image": "wrist-view-08.jpg"
+      },
+      {
+        "joints": [
+          -0.5048828870069428,
+          1.1236362249179823,
+          0.917257953765164,
+          -1.4551384756237127,
+          -0.07763027389944277,
+          -0.17261768520637766
+        ],
+        "image": "wrist-view-09.jpg"
+      }
+    ]
+  }
+}

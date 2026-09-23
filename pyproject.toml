@@ -11,11 +11,8 @@ requires-python = ">=3.10,<3.13"
 dependencies = []
 
 [project.entry-points."dimos.blueprints"]
-coordinator-agentic = "openyam_coordinator_agentic.blueprints:openyam_coordinator_agentic"
-bench-planner-coordinator = "openyam_coordinator_agentic.local_bench:openyam_bench_planner_coordinator"
-bench-proposals = "openyam_coordinator_agentic.bench_pick_and_place:openyam_bench_proposals"
-bench-grasp = "openyam_coordinator_agentic.bench_pick_and_place:openyam_bench_grasp"
-bench-agentic = "openyam_coordinator_agentic.bench_pick_and_place:openyam_bench_agentic"
+openyam-planner-coordinator-agent = "openyam_coordinator_agentic.blueprints:openyam_planner_coordinator_agent"
+openyam-grasp-graspgenx-agent = "openyam_coordinator_agentic.grasp:openyam_grasp_graspgenx_agent"
 
 [tool.setuptools.packages.find]
 where = ["src"]

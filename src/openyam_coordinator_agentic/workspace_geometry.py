@@ -1,4 +1,4 @@
-"""Configured local bench and tripod obstacle construction."""
+"""Construct the obstacles defined by a measured workspace profile."""
 
 from typing import Any
 
@@ -9,7 +9,7 @@ from dimos.msgs.geometry_msgs.Quaternion import Quaternion
 from dimos.msgs.geometry_msgs.Vector3 import Vector3
 
 
-def bench_obstacles(config: dict[str, Any]) -> tuple[Obstacle, Obstacle]:
+def workspace_obstacles(config: dict[str, Any]) -> tuple[Obstacle, Obstacle]:
     """Return the locally measured bench and camera-side wall obstacles."""
     wall = config["camera_wall"]
     return (

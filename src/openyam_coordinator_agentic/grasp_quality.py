@@ -19,6 +19,9 @@ class GraspQualityConfig:
     min_occupied_voxels: int = 24
     min_capture_points: int = 50
     min_closing_span_m: float = 0.006
+    top_max_tilt_deg: float = 45.0
+    side_max_tilt_deg: float = 30.0
+    side_grasp_score_scale: float = 1.0
     max_candidates: int = 10
 
 
@@ -65,9 +68,18 @@ class GraspQualityFilter:
 
         survivors: list[tuple[float, GraspCandidate, dict[str, float]]] = []
         for candidate in candidates.candidates:
-            tcp_from_grasp = _pose_matrix(candidate) @ self._grasp_from_tcp
-            rotation = tcp_from_grasp[:3, :3]
-            translation = tcp_from_grasp[:3, 3]
+            tcp_pose = _pose_matrix(candidate)
+            # OpenYAM approaches along TCP -Z: 0 degrees is top-down,
+            # 90 degrees is horizontal, and >90 approaches from below.
+            tilt_deg = float(np.degrees(np.arccos(np.clip(tcp_pose[2, 2], -1.0, 1.0))))
+            if tilt_deg > self.config.top_max_tilt_deg and not (
+                90.0 - self.config.side_max_tilt_deg <= tilt_deg <= 90.0
+            ):
+                continue
+
+            grasp_pose = tcp_pose @ self._grasp_from_tcp
+            rotation = grasp_pose[:3, :3]
+            translation = grasp_pose[:3, 3]
             local_object = (object_points - translation) @ rotation
             capture = _inside_box(local_object, self._open_offset, self._open_extents)
             capture_points = local_object[capture]
@@ -88,8 +100,11 @@ class GraspQualityFilter:
             quality = float(candidate.score) * (0.35 + 0.65 * np.mean(
                 [support_quality, span_quality, center_quality]
             ))
+            if tilt_deg > self.config.top_max_tilt_deg:
+                quality *= self.config.side_grasp_score_scale
             metrics = {
                 "raw_score": float(candidate.score), "quality_score": quality,
+                "tilt_deg": tilt_deg,
                 "capture_points": float(len(capture_points)), "closing_span_m": x_span,
                 "center_offset_m": x_center,
             }
