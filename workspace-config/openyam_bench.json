@@ -1,15 +1,15 @@
 {
   "camera_serial": "261622074549",
   "camera_translation_m": [
-    -0.27574837201285424,
-    -0.24621957271699185,
-    0.5075832065895843
+    -0.2725253238273951,
+    -0.2438472945261264,
+    0.5097933871690584
   ],
   "camera_quaternion_xyzw": [
-    -0.03412300207713528,
-    0.5806667920564341,
-    -0.006204070569611978,
-    0.8134022417233069
+    -0.03548057265053506,
+    0.5844296926048812,
+    -0.006641482257162268,
+    0.8106410759883698
   ],
   "perception": {
     "color_width": 1280,
@@ -31,7 +31,6 @@
     "side_grasp_score_scale": 0.5,
     "max_candidates": 100
   },
-  "grasp_height_offset_m": 0.012,
   "arm_control": {
     "kp": [
       120.0,
@@ -74,7 +73,7 @@
     -0.0043144282166670085,
     0.9999906928112697
   ],
-  "calibration_reference_notes": "Tag orientation derived from two mechanically aligned plate edges; assumes tag/plate coplanar and parallel to the robot XY plane. Valid while tag is rigidly fixed relative to arm base.",
+  "calibration_reference_notes": "Tag is 70 mm right of arm axis at arm datum; bench top is 20 mm below datum.",
   "gripper": {
     "extents_open": [
       0.0939,
@@ -166,9 +165,8 @@
     ]
   },
   "workspace_calibration": {
-    "record_path": "/home/johannes/dimensional-applications/dimos-openyam-coordinator-agentic/workspace-config/calibration-records/calibration-20260923T195147-827182Z",
-    "scene_status": "Static scene unchanged; camera mount calibration only",
-    "method": "Fixed RGB-D AprilTag + wrist fisheye and hand-eye calibration"
+    "method": "live AprilTag alignment with fixed 70 mm tag-to-arm offset",
+    "scene_status": "Static scene unchanged; camera alignment updated"
   },
   "wrist_camera_calibration": {
     "device": "/dev/v4l/by-id/usb-USB_CAMERA_4K_USB_CAMERA_4K_01.00.00-video-index0",
@@ -332,5 +330,6 @@
         "image": "wrist-view-09.jpg"
       }
     ]
-  }
+  },
+  "bench_top_z_m": -0.02
 }

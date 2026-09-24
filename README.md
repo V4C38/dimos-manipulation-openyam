@@ -93,7 +93,8 @@ generic package source. Only the grasp blueprint reads
 `OPENYAM_WORKSPACE_CONFIG`; the planner agent never reads it.
 
 The single calibration/camera-capture entry point is
-`workspace-config/calibrate_workspace.py`:
+`workspace-config/calibrate_workspace.py`. It uses only the fixed RGB-D camera
+and the AprilTag's measured pose relative to the arm base; the arm can be offline:
 
 ```bash
 ../dimos/.venv/bin/python workspace-config/calibrate_workspace.py --source live
@@ -102,7 +103,8 @@ The single calibration/camera-capture entry point is
 ```
 
 Use `--mode capture` for temporary frames only or `--mode measure` to evaluate the saved
-calibration. See [workspace configuration](workspace-config/README.md) for the
+calibration. Use `--source direct` when the camera is free and no RGB-D stream is
+running. See [workspace configuration](workspace-config/README.md) for the
 measured assumptions. Unapplied runs go to ignored `workspace-config/temp/`;
 applied calibration records go to ignored `workspace-config/calibration-records/`.
 

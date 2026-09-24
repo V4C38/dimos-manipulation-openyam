@@ -7,10 +7,23 @@ from typing import Any
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.perception.experimental.object import Object, Object as DetObject, aggregate_pointclouds, to_detection3d_array
+from dimos.perception.experimental.objectDB import ObjectDB
 from dimos.perception.experimental.object_scene_registration import (
     ObjectSceneRegistrationConfig,
     ObjectSceneRegistrationModule,
 )
+
+
+class LatestObservationObjectDB(ObjectDB):
+    """Keep tracked identities while using only the latest observed grasp geometry."""
+
+    def _update_existing(self, existing: Object, obj: Object, now: float) -> bool:
+        updated = super()._update_existing(existing, obj, now)
+        if updated:
+            # The base database accumulates world-frame clouds. A moved object
+            # would otherwise leave old points in the next grasp's target.
+            existing.pointcloud = obj.pointcloud
+        return updated
 
 
 class DenseObjectSceneRegistrationConfig(ObjectSceneRegistrationConfig):
@@ -26,6 +39,13 @@ class DenseObjectSceneRegistrationModule(ObjectSceneRegistrationModule):
     """Use denser, configurable object clouds while retaining DimOS detection/tracking."""
 
     config: DenseObjectSceneRegistrationConfig
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._object_db = LatestObservationObjectDB(
+            distance_threshold=self.config.distance_threshold,
+            min_detections_for_permanent=self.config.min_detections_for_permanent,
+        )
 
     def _process_3d_detections(
         self,

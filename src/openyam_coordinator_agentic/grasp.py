@@ -30,6 +30,7 @@ from dimos.perception.detection.detectors.yoloe import YoloePromptMode
 from dimos.protocol.tf.static_tf_publisher import StaticTfPublisher
 from dimos.robot.manipulators.common.blueprints import coordinator, trajectory_task
 from dimos.robot.manipulators.openyam.config import OPENYAM_GRIPPER_JOINT, openyam_hardware
+from dimos.utils.logging_config import setup_logger
 from dimos.web.cockpit import Chat, Row, Video, cockpit
 
 from openyam_coordinator_agentic.collision_model import model_config
@@ -44,6 +45,9 @@ MAX_QUALITY_RESCANS = 1
 # At 6 FPS, this waits for three post-retreat RGB-D frames before the next
 # on-request scan selects its latest aligned frame.
 RETRY_FRAME_SETTLE_S = 0.5
+# Trajectory completion reports the last command sent, not physical settling.
+MOTION_SETTLE_S = 0.5
+logger = setup_logger()
 
 
 def workspace_config() -> dict[str, Any]:
@@ -56,7 +60,7 @@ def workspace_config() -> dict[str, Any]:
     required = (
         "camera_serial", "camera_translation_m", "camera_quaternion_xyzw", "gripper",
         "grasp_frame_to_tcp", "bench_center_m", "bench_size_m", "bench_quaternion_xyzw",
-        "camera_wall", "empty_epsilon", "grasp_height_offset_m", "perception", "grasp_quality",
+        "camera_wall", "empty_epsilon", "perception", "grasp_quality",
         "collision_model", "home_joints",
     )
     missing = [name for name in required if config.get(name) is None]
@@ -117,19 +121,76 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
 
     @staticmethod
     def _offset_pose(pose: PoseStamped, offset: float) -> PoseStamped:
-        # GraspGenX approaches along +Z; OpenYAM's gripper_tip approaches
-        # along -Z. Retreat is therefore +Z in the planning tip frame.
+        # The fixed-camera grasp clearance is a vertical lift in the world
+        # frame. Rotating this offset with a tilted grasp can shift the TCP
+        # several centimetres sideways before it ever reaches the object.
         return PoseStamped(
             ts=pose.ts,
             frame_id=pose.frame_id,
-            position=pose.position + pose.orientation.rotate_vector(Vector3(0, 0, offset)),
+            position=pose.position + Vector3(0, 0, offset),
             orientation=pose.orientation,
         )
 
     def _servo(self, start: PoseStamped, end: PoseStamped, planning_group: Any) -> SkillResult | None:
         """Remember the final approach so a failed close can reverse it."""
         self._last_grasp_leg = (start, end, planning_group)
-        return super()._servo(start, end, planning_group)
+        self._log_reached_pose("linear_start", start, planning_group)
+        state = self._manipulation.get_state().groups.get(planning_group)
+        reached = None if state is None else state.end_effector_pose
+        if reached is None or reached.frame_id != end.frame_id:
+            return SkillResult.fail("EXECUTION_FAILED", "Current TCP pose unavailable in the target frame")
+        # move_linear is relative to measured FK. Subtract that same pose so
+        # pregrasp tracking error is not carried through to the contact target.
+        failure = super()._servo(reached, end, planning_group)
+        if failure is None:
+            time.sleep(MOTION_SETTLE_S)
+        self._log_reached_pose("linear_end", end, planning_group)
+        return failure
+
+    def _move(self, pose: PoseStamped, planning_group: Any) -> SkillResult | None:
+        failure = super()._move(pose, planning_group)
+        if failure is None:
+            time.sleep(MOTION_SETTLE_S)
+        self._log_reached_pose("pregrasp_move_end", pose, planning_group)
+        if failure is None:
+            state = self._manipulation.get_state().groups.get(planning_group)
+            reached = None if state is None else state.end_effector_pose
+            if reached is None or reached.frame_id != pose.frame_id:
+                return SkillResult.fail("EXECUTION_FAILED", "Reached TCP pose unavailable")
+            error = reached.position.distance(pose.position)
+            if error > 0.01:
+                return SkillResult.fail(
+                    "EXECUTION_FAILED", f"Pregrasp position was not reached ({error:.3f} m error)"
+                )
+        return failure
+
+    @staticmethod
+    def _pose_record(pose: PoseStamped) -> dict[str, Any]:
+        return {
+            "frame_id": pose.frame_id,
+            "position_m": pose.position.to_list(),
+            "quaternion_xyzw": pose.orientation.to_list(),
+        }
+
+    def _log_reached_pose(self, phase: str, target: PoseStamped, group: Any) -> None:
+        """Record encoder-derived FK; this is not an independent physical measurement."""
+        try:
+            snapshot = self._manipulation.get_state()
+            state = snapshot.groups.get(group)
+            reached = None if state is None else state.end_effector_pose
+            error = None
+            if reached is not None and reached.frame_id == target.frame_id:
+                error = (reached.position - target.position).to_list()
+            logger.info(
+                "OpenYAM grasp tracking", phase=phase, planning_group=str(group),
+                snapshot_timestamp=snapshot.timestamp,
+                target=self._pose_record(target),
+                reached_fk=None if reached is None else self._pose_record(reached),
+                reached_minus_target_m=error,
+            )
+        except Exception as exc:
+            # Diagnostic availability must not change motion or retry behavior.
+            logger.warning("OpenYAM grasp tracking unavailable", phase=phase, error=str(exc))
 
     def _back_off_after_failed_grasp(self) -> SkillResult | None:
         """Retreat, then clear the fixed camera's view before rescanning."""
@@ -170,6 +231,16 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
         candidates, self._last_grasp_quality = self._grasp_quality.filter(
             candidates, pointcloud
         )
+        points = pointcloud.points_f32()
+        logger.info(
+            "OpenYAM grasp perception", object_id=object_id,
+            frame_id=pointcloud.frame_id, cloud_timestamp=pointcloud.ts,
+            point_count=len(points),
+            centroid_m=points.mean(axis=0).tolist() if len(points) else None,
+            bounds_min_m=points.min(axis=0).tolist() if len(points) else None,
+            bounds_max_m=points.max(axis=0).tolist() if len(points) else None,
+            grasp_quality=self._last_grasp_quality,
+        )
         self._grasp_candidates = candidates
         self._manipulation.show_grasp_proposals(candidates)
         if candidates.header.frame_id != self.config.planning_frame:
@@ -196,15 +267,17 @@ class OpenYamPickAndPlace(PickAndPlaceModule):
                 PoseStamped(
                     ts=candidates.header.timestamp,
                     frame_id=candidates.header.frame_id,
-                    # Keep the fingertips above the tabletop at the learned
-                    # contact pose.  This is a bench adjustment, not another
-                    # proposal rejection or clearance check.
-                    position=candidate.pose.position + Vector3(0.0, 0.0, C["grasp_height_offset_m"]),
+                    position=candidate.pose.position,
                     orientation=candidate.pose.orientation,
                 ),
                 group,
             )
             pregrasp = self._offset_pose(grasp, self.config.pregrasp_offset)
+            logger.info(
+                "OpenYAM grasp target", object_id=object_id, rank=rank,
+                score=float(candidate.score), grasp=self._pose_record(grasp),
+                pregrasp=self._pose_record(pregrasp),
+            )
             failure = self._move(pregrasp, group) or self._servo(pregrasp, grasp, group)
             if failure is not None:
                 if failure.error_code != "PLANNING_FAILED":
@@ -347,7 +420,7 @@ _openyam_grasp_stack = autoconnect(
     OpenYamWorkspaceMount.blueprint(),
     CollisionAwareWorkspaceManipulation.blueprint(
         model=_model, world_frame="world", static_transforms=[_mount],
-        visualization={"backend": "viser"}, default_speed_scale=0.35, linear_speed_scale=0.35,
+        visualization={"backend": "viser"}, default_speed_scale=0.4, linear_speed_scale=0.4,
     ),
     OpenYamPickAndPlace.blueprint(
         planning_frame="world", max_grasp_attempts=20, yaw_policy="generated",
