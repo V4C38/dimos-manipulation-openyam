@@ -7,8 +7,8 @@ through `OPENYAM_WORKSPACE_CONFIG` at startup. `yam_collision.urdf` and its
 
 `calibrate_workspace.py` finds the AprilTag in the fixed RGB-D camera stream and
 uses its measured position relative to the arm axis. In arm coordinates +X is
-forward, +Y is left, and +Z is up. The tag center is 70 mm right of the arm axis
-(Y=-0.070 m), so the arm axis is 70 mm left of the tag (Y=0). The tag and arm
+forward, +Y is left, and +Z is up. The active calibration places the tag center
+120 mm right of the arm axis (Y=-0.120 m), measured center-to-center. The tag and arm
 datum are 20 mm above the bench; the bench top is Z=-0.020 m. No wrist camera,
 arm motion, or plate-edge selection is involved.
 When the RGB-D stream is already running, use:

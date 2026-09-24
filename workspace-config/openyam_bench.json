@@ -1,15 +1,15 @@
 {
   "camera_serial": "261622074549",
   "camera_translation_m": [
-    -0.27241306461267006,
-    -0.3143540221627238,
-    0.5094383154370459
+    -0.27318471957349055,
+    -0.2937850227445154,
+    0.5093247199843945
   ],
   "camera_quaternion_xyzw": [
-    -0.035095056668635015,
-    0.5844674066317057,
-    -0.006263368417008493,
-    0.8106336766991034
+    -0.035248863677663306,
+    0.5843313312710977,
+    -0.006664962270616087,
+    0.8107218950924611
   ],
   "perception": {
     "color_width": 1280,
@@ -62,7 +62,7 @@
   ],
   "calibration_tag_center_from_arm_axis_m": [
     0.0,
-    -0.14,
+    -0.12,
     0.0
   ],
   "calibration_tag_size_m": 0.056,
@@ -73,7 +73,7 @@
     -0.0043144282166670085,
     0.9999906928112697
   ],
-  "calibration_reference_notes": "Applied tag offset plus 70 mm rightward correction: tag center Y=-140 mm from arm axis; bench top is 20 mm below datum.",
+  "calibration_reference_notes": "Tag center is 120 mm right of arm axis; bench top is 20 mm below the shared arm/tag datum.",
   "gripper": {
     "extents_open": [
       0.0939,

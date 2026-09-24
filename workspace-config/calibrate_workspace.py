@@ -132,28 +132,26 @@ def main() -> None:
     tag_size = float(config.get("calibration_tag_size_m", 0.056))
     camera_from_tag, count, rms = detect_tag_pose(images, K, tag_id, tag_size)
 
-    # Arm frame: +X forward, +Y left, +Z up. Apply the measured 70 mm tag
-    # offset plus the requested 70 mm correction toward the arm's right.
-    # This makes the tag center Y=-140 mm from the arm axis.
+    # Arm frame: +X forward, +Y left, +Z up. The calibrated arm-axis to tag
+    # center separation is 120 mm, with the tag to the arm's right.
     world_from_tag = np.eye(4)
     world_from_tag[:3, :3] = Rotation.from_quat(
         config.get("calibration_tag_quaternion_xyzw", [0, 0, 0, 1])
     ).as_matrix()
-    world_from_tag[:3, 3] = [0.0, -0.140, 0.0]
+    world_from_tag[:3, 3] = [0.0, -0.120, 0.0]
     world_from_camera_color = world_from_tag @ np.linalg.inv(camera_from_tag)
     world_from_camera_link = world_from_camera_color @ np.linalg.inv(link_from_color)
 
     config.update(
         camera_translation_m=world_from_camera_link[:3, 3].tolist(),
         camera_quaternion_xyzw=Rotation.from_matrix(world_from_camera_link[:3, :3]).as_quat().tolist(),
-        calibration_tag_center_from_arm_axis_m=[0.0, -0.140, 0.0],
+        calibration_tag_center_from_arm_axis_m=[0.0, -0.120, 0.0],
         bench_top_z_m=-0.020,
-        calibration_reference_notes="Applied tag offset plus 70 mm rightward correction: tag center Y=-140 mm from arm axis; bench top is 20 mm below datum.",
+        calibration_reference_notes="Tag center is 120 mm right of arm axis; bench top is 20 mm below the shared arm/tag datum.",
     )
     report = {
         "tag_id": tag_id,
-        "tag_center_from_arm_axis_m": [0.0, -0.140, 0.0],
-        "arm_axis_from_tag_m": [0.0, 0.140, 0.0],
+        "tag_center_from_arm_axis_m": [0.0, -0.120, 0.0],
         "bench_top_z_m": -0.020,
         "observations": count,
         "mean_reprojection_error_px": rms,
@@ -164,7 +162,7 @@ def main() -> None:
         if args.config.read_text() != before:
             raise RuntimeError("Workspace profile changed during calibration")
         config["workspace_calibration"] = {
-            "method": "live AprilTag alignment with fixed 70 mm tag-to-arm offset",
+            "method": "live AprilTag alignment with 120 mm center-to-center tag-to-arm offset",
             "scene_status": "Static scene unchanged; camera alignment updated",
         }
         temporary = args.config.with_name(args.config.name + ".calibration-tmp")

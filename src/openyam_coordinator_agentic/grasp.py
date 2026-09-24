@@ -420,7 +420,7 @@ _openyam_grasp_stack = autoconnect(
     OpenYamWorkspaceMount.blueprint(),
     CollisionAwareWorkspaceManipulation.blueprint(
         model=_model, world_frame="world", static_transforms=[_mount],
-        visualization={"backend": "viser"}, default_speed_scale=0.4, linear_speed_scale=0.4,
+        visualization={"backend": "viser"}, default_speed_scale=0.6, linear_speed_scale=0.6,
     ),
     OpenYamPickAndPlace.blueprint(
         planning_frame="world", max_grasp_attempts=20, yaw_policy="generated",
