@@ -132,27 +132,28 @@ def main() -> None:
     tag_size = float(config.get("calibration_tag_size_m", 0.056))
     camera_from_tag, count, rms = detect_tag_pose(images, K, tag_id, tag_size)
 
-    # Arm frame: +X forward, +Y left, +Z up. The tag is right of the arm,
-    # hence its center is Y=-70 mm; it shares the arm datum, 20 mm above bench.
+    # Arm frame: +X forward, +Y left, +Z up. Apply the measured 70 mm tag
+    # offset plus the requested 70 mm correction toward the arm's right.
+    # This makes the tag center Y=-140 mm from the arm axis.
     world_from_tag = np.eye(4)
     world_from_tag[:3, :3] = Rotation.from_quat(
         config.get("calibration_tag_quaternion_xyzw", [0, 0, 0, 1])
     ).as_matrix()
-    world_from_tag[:3, 3] = [0.0, -0.070, 0.0]
+    world_from_tag[:3, 3] = [0.0, -0.140, 0.0]
     world_from_camera_color = world_from_tag @ np.linalg.inv(camera_from_tag)
     world_from_camera_link = world_from_camera_color @ np.linalg.inv(link_from_color)
 
     config.update(
         camera_translation_m=world_from_camera_link[:3, 3].tolist(),
         camera_quaternion_xyzw=Rotation.from_matrix(world_from_camera_link[:3, :3]).as_quat().tolist(),
-        calibration_tag_center_from_arm_axis_m=[0.0, -0.070, 0.0],
+        calibration_tag_center_from_arm_axis_m=[0.0, -0.140, 0.0],
         bench_top_z_m=-0.020,
-        calibration_reference_notes="Tag is 70 mm right of arm axis at arm datum; bench top is 20 mm below datum.",
+        calibration_reference_notes="Applied tag offset plus 70 mm rightward correction: tag center Y=-140 mm from arm axis; bench top is 20 mm below datum.",
     )
     report = {
         "tag_id": tag_id,
-        "tag_center_from_arm_axis_m": [0.0, -0.070, 0.0],
-        "arm_axis_from_tag_m": [0.0, 0.070, 0.0],
+        "tag_center_from_arm_axis_m": [0.0, -0.140, 0.0],
+        "arm_axis_from_tag_m": [0.0, 0.140, 0.0],
         "bench_top_z_m": -0.020,
         "observations": count,
         "mean_reprojection_error_px": rms,
