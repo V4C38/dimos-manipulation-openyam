@@ -18,7 +18,11 @@
     "object_voxel_downsample_m": 0.002,
     "object_mask_erode_pixels": 1,
     "object_outlier_neighbors": 12,
-    "object_outlier_std_ratio": 0.75
+    "object_outlier_std_ratio": 0.75,
+    "detector_image_size": 1280,
+    "max_frame_age_s": 2.0,
+    "max_rgb_depth_skew_s": 0.03,
+    "object_surface_margin_m": 0.003
   },
   "grasp_quality": {
     "min_object_points": 150,
@@ -26,10 +30,17 @@
     "min_occupied_voxels": 24,
     "min_capture_points": 50,
     "min_closing_span_m": 0.006,
-    "top_max_tilt_deg": 45.0,
-    "side_max_tilt_deg": 30.0,
-    "side_grasp_score_scale": 0.5,
-    "max_candidates": 100
+    "max_candidates": 100,
+    "max_tilt_deg": 60.0,
+    "tilt_score_floor": 0.5,
+    "min_raw_score": 0.7,
+    "min_capture_fraction": 0.25,
+    "min_contact_points_per_side": 12,
+    "min_contact_normal_alignment": 0.25,
+    "jaw_margin_m": 0.003,
+    "clearance_m": 0.003,
+    "diversity_distance_m": 0.01,
+    "diversity_angle_deg": 15.0
   },
   "arm_control": {
     "kp": [
@@ -78,24 +89,24 @@
     "extents_open": [
       0.0939,
       0.033927,
-      0.076002
+      0.096002
     ],
     "offset_open": [
       0.0,
       0.0,
-      0.061999
+      0.1188415
     ],
     "extents_half_open": [
       0.04695,
       0.033927,
-      0.076002
+      0.096002
     ],
     "offset_half_open": [
       0.0,
       0.0,
-      0.061999
+      0.1188415
     ],
-    "fingertip_depth": 0.1,
+    "fingertip_depth": 0.1668425,
     "family": "parallel_2f"
   },
   "grasp_frame_to_tcp": [
@@ -115,7 +126,7 @@
       0.0,
       0.0,
       -1.0,
-      0.1
+      0.12
     ],
     [
       0.0,
@@ -331,5 +342,37 @@
       }
     ]
   },
-  "bench_top_z_m": -0.02
+  "bench_top_z_m": -0.02,
+  "gripper_geometry_notes": {
+    "reference": "Existing standard-gripper collision model, including its preexisting 20 mm distal extension; physical contact dimensions not remeasured.",
+    "frame_convention": "Generated +Z is gripper -Z, generated X is gripper Y. Both frame origins coincide at the gripper body. TCP remains 120 mm along gripper -Z, inside the fingertip envelope.",
+    "capture_depth_reference": "Distal collision extent; retain configured opening width, pad thickness, and 96.002 mm contact-band length.",
+    "distal_depth_m": 0.1668425
+  },
+  "graspgenx": {
+    "num_grasps": 400,
+    "min_raw_score": 0.7,
+    "remove_outliers": false
+  },
+  "approach_planning": {
+    "endpoint_position_tolerance_m": 0.003,
+    "endpoint_orientation_tolerance_deg": 2.0,
+    "approach_speed_m_s": 0.08,
+    "approach_acceleration_m_s2": 0.3,
+    "approach_blend_deviation_rad": 0.005,
+    "max_approach_duration_s": 8.0
+  },
+  "grasp_execution": {
+    "pregrasp_offset": 0.1,
+    "contact_position_tolerance_m": 0.005,
+    "contact_orientation_tolerance_deg": 3.0,
+    "settle_timeout_s": 3.0,
+    "max_joint_state_age_s": 0.5,
+    "max_object_age_s": 30.0,
+    "lift_distance_m": 0.1,
+    "hold_verification_s": 1.0,
+    "max_hold_aperture_change": 0.05,
+    "home_joint_tolerance_rad": 0.02,
+    "supported_contact_tolerance_m": 0.015
+  }
 }

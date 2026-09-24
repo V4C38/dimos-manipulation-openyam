@@ -86,6 +86,12 @@ geometry, home pose, and a relative path to the collision model. The measured
 placement coordinate is retained as site data, but is not injected into the
 agent's instructions or used by the current pick flow.
 
+The local grasp stack adds configurable GraspGenX sampling, native segmentation
+masks, a preference for approaches from above, contact and collision filtering,
+and measured endpoint/hold checks. See the
+[grasp settings](workspace-config/README.md#grasp-settings-and-execution) for values,
+frame conventions, retry behavior, and current validation limits.
+
 ## Workspace Configuration
 
 `workspace-config/` isolates personal camera calibration and collision boxes from

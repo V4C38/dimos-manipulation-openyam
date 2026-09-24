@@ -271,6 +271,6 @@
   <joint name="gripper_tip_joint" type="fixed">
     <parent link="gripper" />
     <child link="gripper_tip" />
-    <origin xyz="0 0 -0.1" rpy="0 0 0" />
+    <origin xyz="0 0 -0.12" rpy="0 0 0" />
   </joint>
 </robot>

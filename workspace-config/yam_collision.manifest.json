@@ -1,7 +1,7 @@
 {
   "source_commit": "5d47b358bafb30c65e397f2ece506550a0db4594",
   "arm_geometry": "unchanged manufacturer triangles",
-  "finger_geometry": "per-connected-component convex full-stroke sweep",
+  "finger_geometry": "per-connected-component convex full-stroke sweep; main finger sweeps extended 20 mm distally",
   "stroke_m": 0.04695,
   "new_self_exclusion_pairs": [],
   "sweeps": [
@@ -42,6 +42,15 @@
       "containment_error_m": 2.5026981306694513e-14
     }
   ],
-  "model_sha256": "dbc63f9576ea8eaff1ed4e16940c84678731c2cc20622fc2da5a1d67174e1a90",
-  "collision_geometry_count": 13
+  "model_sha256": "2f22288d428d092b9b32fc9204cdfaba166f64f57e72e8a66c08f698ac47e87a",
+  "collision_geometry_count": 13,
+  "finger_extension_m": 0.02,
+  "mesh_sha256": {
+    "tip_left_sweep_0.obj": "83328ade80ee0312daa3712202c203675834d224274084b4ffc254bd9a12d63d",
+    "tip_left_sweep_1.obj": "603555ec03fba4d204b891c4a8ef1150761058dd7c38c6fb4243bdd44fdf17e8",
+    "tip_left_sweep_2.obj": "d2d66065b9dc96505083635f368d53184f5d7909889db2b8de4d734293a08d33",
+    "tip_right_sweep_0.obj": "9feacc4fba0580e9d1c9f0a8259d8e9613132d95d9de754866db198bce5dc2eb",
+    "tip_right_sweep_1.obj": "cf9bb9f4dc4f05dbea9841cb642d9b68826194d521b1c2b7f7c282d4c4f978fc",
+    "tip_right_sweep_2.obj": "fe1b8c5f8b1afdd4842bd937986aa95c4681220bbe1753af3bd80050127cc2fb"
+  }
 }
