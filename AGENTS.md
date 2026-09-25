@@ -29,7 +29,7 @@ These list blueprints and start the hardware-backed agentic blueprint, respectiv
 
 ## Coding Style & Naming
 
-Target Python 3.10–3.12. Follow existing four-space indentation, `snake_case` functions/modules, `PascalCase` classes, and uppercase constants. Use descriptive names, type annotations, and concise docstrings. No formatter or linter is configured here. Name pytest files `test_*.py` and functions `test_*`.
+Target Python 3.10–3.12. Follow existing four-space indentation, `snake_case` functions/modules, `PascalCase` classes, and uppercase constants. Use descriptive names, type annotations, and concise docstrings. Ruff is configured in `pyproject.toml` with DimOS's 100-column formatting and import ordering. Name pytest files `test_*.py` and functions `test_*`.
 
 ## Commits & Pull Requests
 

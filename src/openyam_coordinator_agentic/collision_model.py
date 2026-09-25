@@ -152,8 +152,10 @@ def model_config(path: Path, expected_joint_zero_offsets_rad: dict[str, float] |
     manifest = json.loads(path.with_name(f"{path.stem}.manifest.json").read_text())
     if hashlib.sha256(path.read_bytes()).hexdigest() != manifest["model_sha256"]:
         raise ValueError("Generated collision model no longer matches its manifest")
-    if (expected_joint_zero_offsets_rad is not None
-            and manifest.get("joint_zero_offsets_rad", {}) != expected_joint_zero_offsets_rad):
+    if (
+        expected_joint_zero_offsets_rad is not None
+        and manifest.get("joint_zero_offsets_rad", {}) != expected_joint_zero_offsets_rad
+    ):
         raise ValueError("Collision model joint offsets do not match the workspace profile")
     config = make_openyam_model_config()
     config.model = RobotModel.from_file(path).with_default_joint_acceleration_limit(2.0)
@@ -164,8 +166,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--provenance", type=Path, required=True)
-    parser.add_argument("--joint-zero-offsets", type=Path,
-                        help="JSON mapping of measured arm joint offsets in radians")
+    parser.add_argument(
+        "--joint-zero-offsets",
+        type=Path,
+        help="JSON mapping of measured arm joint offsets in radians",
+    )
     args = parser.parse_args()
     offsets = json.loads(args.joint_zero_offsets.read_text()) if args.joint_zero_offsets else None
     if offsets is not None:

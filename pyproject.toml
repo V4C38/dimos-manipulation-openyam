@@ -5,17 +5,34 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openyam-coordinator-agentic"
 version = "0.1.0"
-description = "External generic OpenYAM coordinator and agentic DimOS blueprints"
+description = "OpenYAM agentic manipulation and checked GraspGenX pick/place for DimOS"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
-dependencies = []
+dependencies = [
+    "numpy>=2,<3",
+    "pydantic>=2,<3",
+    "scipy>=1.14,<2",
+    "trimesh>=4.12,<5",
+]
 
 [project.entry-points."dimos.blueprints"]
-openyam-planner-coordinator-agent = "openyam_coordinator_agentic.blueprints:openyam_planner_coordinator_agent"
-openyam-grasp-graspgenx-agent = "openyam_coordinator_agentic.grasp:openyam_grasp_graspgenx_agent"
+openyam-planner-coordinator-agent = "openyam_coordinator_agentic.blueprints.agentic:openyam_planner_coordinator_agent"
+openyam-grasp-graspgenx-agent = "openyam_coordinator_agentic.blueprints.grasp:openyam_grasp_graspgenx_agent"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.uv.sources]
-dimos = { path = "../dimos", editable = true }
+[tool.setuptools.package-data]
+"openyam_coordinator_agentic.grasping.grasp_gen_x" = ["project/pyproject.toml", "project/uv.lock"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dimos", "openyam_coordinator_agentic"]
+combine-as-imports = true
+force-sort-within-sections = true

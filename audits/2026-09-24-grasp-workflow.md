@@ -44,7 +44,7 @@ The logs do not include final planned-joint FK plus a time series of joint error
 
 **Change to make:** require final planned FK to match the requested pose, then require fresh encoder position/orientation convergence before closing. Keep environment/self-collision validation during approach; allow only the intended gripper/object contact. Record the final commanded and measured joint poses, contact error and gripper readback. Select reachability using the full approach, not just its elevated starting pose.
 
-Evidence: [local pick implementation](../src/openyam_coordinator_agentic/grasp.py), [inherited pick implementation](../../dimos/dimos/manipulation/pick_and_place_module.py), [Cartesian command](../../dimos/dimos/manipulation/manipulation_module.py), [trajectory completion](../../dimos/dimos/control/tasks/trajectory_task/trajectory_task.py), [preserved run records](../workspace-config/temp/grasp-audit-20260924/run-evidence.json).
+Evidence: [local pick implementation](../src/openyam_coordinator_agentic/pick_and_place_module.py), [inherited pick implementation](../../dimos/dimos/manipulation/pick_and_place_module.py), [Cartesian command](../../dimos/dimos/manipulation/manipulation_module.py), [trajectory completion](../../dimos/dimos/control/tasks/trajectory_task/trajectory_task.py), [preserved run records](../workspace-config/temp/grasp-audit-20260924/run-evidence.json).
 
 ## 3. Approach preference and motion do not match
 
@@ -56,7 +56,7 @@ Separately, `_offset_pose()` always adds **100 mm in world +Z**. The contact leg
 
 **Change to make:** allow a continuous **0–60° cone**, smoothly favor near-vertical approaches, and reject horizontal/below grasps for this workspace preference. Construct the insertion pregrasp as `p_contact + distance * R_tcp[:, 2]`, then insert along TCP −Z. Use a separate elevated transit waypoint if needed; separately lift the object vertically after acquisition. Apply robot/table clearance checks throughout. The 60° limit is a proposed preference, not a measured optimum.
 
-Evidence: [quality filter](../src/openyam_coordinator_agentic/grasp_quality.py), [offset and pick flow](../src/openyam_coordinator_agentic/grasp.py).
+Evidence: [quality filter](../src/openyam_coordinator_agentic/grasp_quality.py), [offset and pick flow](../src/openyam_coordinator_agentic/pick_and_place_module.py).
 
 ## 4. GraspGenX configuration: valid model loading, incomplete deployment policy
 

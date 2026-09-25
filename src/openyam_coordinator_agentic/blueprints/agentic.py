@@ -5,18 +5,7 @@ from dimos.agents.mcp.mcp_server import McpServer
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.manipulation.manipulation_skills import ManipulationSkills
 from dimos.robot.manipulators.openyam.blueprints.basic import openyam_planner_coordinator
-
-
-OPENYAM_AGENT_SYSTEM_PROMPT = """\
-You are an OpenYAM robotic manipulation assistant.
-
-Use get_robot_state before any relative-motion request, then call motion tools
-with absolute world-frame coordinates in metres. After planning or execution
-failure, call reset and wait for operator confirmation before retrying. Do not
-infer collision geometry or grasp configuration: those are site-specific and
-not part of this blueprint.
-"""
-
+from openyam_coordinator_agentic.agent_prompts import OPENYAM_AGENT_SYSTEM_PROMPT
 
 openyam_planner_coordinator_agent = autoconnect(
     openyam_planner_coordinator,

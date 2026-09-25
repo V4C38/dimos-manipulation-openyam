@@ -34,8 +34,12 @@ class GripperGeometry:
             name = collision.get("name", "")
             vertices = vertices[hull.vertices]
             center = vertices.mean(axis=0)
-            self._bounds[name] = (center, float(np.linalg.norm(vertices - center, axis=1).max()),
-                                  vertices.min(axis=0), vertices.max(axis=0))
+            self._bounds[name] = (
+                center,
+                float(np.linalg.norm(vertices - center, axis=1).max()),
+                vertices.min(axis=0),
+                vertices.max(axis=0),
+            )
             self.parts.append((name, vertices, hull.equations))
         if not self.parts:
             raise ValueError("Gripper collision geometry is missing")
@@ -46,30 +50,44 @@ class GripperGeometry:
         grasp_from_tcp = np.asarray(grasp_frame_to_tcp)
         points = self.vertices @ grasp_from_tcp[:3, :3].T + grasp_from_tcp[:3, 3]
         distal = float(points[:, 2].max())
-        upper_bounds = [float(gripper[f"offset_{aperture}"][2] + gripper[f"extents_{aperture}"][2] / 2)
-                        for aperture in ("open", "half_open")]
-        if (abs(distal - gripper["fingertip_depth"]) > 0.001
-                or any(abs(distal - upper) > 0.001 for upper in upper_bounds)):
+        upper_bounds = [
+            float(gripper[f"offset_{aperture}"][2] + gripper[f"extents_{aperture}"][2] / 2)
+            for aperture in ("open", "half_open")
+        ]
+        if abs(distal - gripper["fingertip_depth"]) > 0.001 or any(
+            abs(distal - upper) > 0.001 for upper in upper_bounds
+        ):
             raise ValueError("Capture depth/TCP transform disagree with collision fingertips")
         if not np.allclose(grasp_from_gripper[:3, 3], 0, atol=1e-6):
             raise ValueError("OpenYAM grasp frame must share the gripper body origin")
-        if not np.allclose(grasp_from_gripper[:3, :3], [[0, 1, 0], [1, 0, 0], [0, 0, -1]], atol=1e-6):
+        if not np.allclose(
+            grasp_from_gripper[:3, :3], [[0, 1, 0], [1, 0, 0], [0, 0, -1]], atol=1e-6
+        ):
             raise ValueError("OpenYAM grasp closing/approach axes disagree with the gripper body")
 
-    def _contains(self, name: str, planes: np.ndarray, points: np.ndarray, clearance: float) -> bool:
+    def _contains(
+        self, name: str, planes: np.ndarray, points: np.ndarray, clearance: float
+    ) -> bool:
         _, _, low, high = self._bounds[name]
         points = points[np.all((points >= low - clearance) & (points <= high + clearance), axis=1)]
         # Keep the temporary point/plane matrix bounded for detailed finger hulls.
         for start in range(0, len(points), 128):
-            distances = points[start:start + 128] @ planes[:, :3].T + planes[:, 3]
+            distances = points[start : start + 128] @ planes[:, :3].T + planes[:, 3]
             if np.any(np.all(distances <= clearance, axis=1)):
                 return True
         return False
 
     def obstruction(
-        self, tcp_pose: np.ndarray, scene: np.ndarray, scene_tree: cKDTree | None,
-        object_points: np.ndarray, *, support_z: float, clearance: float,
-        approach_distance: float, step: float = 0.005,
+        self,
+        tcp_pose: np.ndarray,
+        scene: np.ndarray,
+        scene_tree: cKDTree | None,
+        object_points: np.ndarray,
+        *,
+        support_z: float,
+        clearance: float,
+        approach_distance: float,
+        step: float = 0.005,
     ) -> str | None:
         rotation = tcp_pose[:3, :3]
         # A half-space covers the support plane under the object even where
@@ -77,12 +95,16 @@ class GripperGeometry:
         at_contact = self.vertices @ rotation.T + tcp_pose[:3, 3]
         if float(at_contact[:, 2].min()) < support_z + clearance:
             return "support_plane_collision"
-        for distance in np.linspace(0, approach_distance, int(np.ceil(approach_distance / step)) + 1):
+        for distance in np.linspace(
+            0, approach_distance, int(np.ceil(approach_distance / step)) + 1
+        ):
             position = tcp_pose[:3, 3] + rotation[:, 2] * distance
             for name, vertices, planes in self.parts:
                 center, radius, _, _ = self._bounds[name]
                 if scene_tree is not None:
-                    indices = scene_tree.query_ball_point(position + rotation @ center, radius + clearance)
+                    indices = scene_tree.query_ball_point(
+                        position + rotation @ center, radius + clearance
+                    )
                     local = (scene[indices] - position) @ rotation
                     if self._contains(name, planes, local, clearance):
                         return "scene_insertion_collision"

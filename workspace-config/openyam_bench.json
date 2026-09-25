@@ -350,7 +350,7 @@
     "distal_depth_m": 0.1668425
   },
   "graspgenx": {
-    "num_grasps": 400,
+    "num_grasps": 800,
     "min_raw_score": 0.7,
     "remove_outliers": false
   },
@@ -360,10 +360,21 @@
     "approach_speed_m_s": 0.08,
     "approach_acceleration_m_s2": 0.3,
     "approach_blend_deviation_rad": 0.005,
-    "max_approach_duration_s": 8.0
+    "max_approach_duration_s": 8.0,
+    "ik_position_tolerance_m": 0.002,
+    "ik_orientation_tolerance_deg": 1.0,
+    "ik_max_attempts": 10,
+    "grasp_joint_limit_margin_rad": 0.05,
+    "checked_transit_start_tolerance_rad": 0.03,
+    "kinematics": {
+      "backend": "pink",
+      "max_iterations": 300,
+      "joint_limit_posture_margin": 0.05
+    }
   },
   "grasp_execution": {
     "pregrasp_offset": 0.1,
+    "pregrasp_fallback_offset_m": 0.06,
     "contact_position_tolerance_m": 0.005,
     "contact_orientation_tolerance_deg": 3.0,
     "settle_timeout_s": 3.0,

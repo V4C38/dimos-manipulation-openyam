@@ -57,7 +57,7 @@ The folded zero-joint `home_joints` match Git HEAD's power-off-safe resting pose
   Object clouds retain 2 mm voxels. Frames older than 2 seconds or RGB/depth
   skew above 30 ms are rejected. Points within 3 mm of/below the bench are removed
   from object geometry; no depth or calibration offset is applied.
-- `graspgenx` requests 400 samples with confidence at least 0.7, one inference
+- `graspgenx` requests 800 samples with confidence at least 0.7, one inference
   pass, and no early top-K limit. The additional GraspGenX outlier removal is off;
   scene registration still performs its configured outlier removal. The pinned
   upstream model/checkpoints and their diffusion settings remain in use.
@@ -67,7 +67,20 @@ The folded zero-joint `home_joints` match Git HEAD's power-off-safe resting pose
   Collision meshes are checked against the support plane, scene points along
   insertion, and object/palm intersections. Full-stroke finger hulls are used
   conservatively against the scene, while intended finger/object contact is allowed.
-- Up to 20 ranked candidates undergo transit and complete insertion planning.
+- Up to 20 planning options undergo transit and complete insertion planning.
+  For each ranked contact, try the generated orientation and its 180° rotation
+  about TCP Z, first with 100 mm axial standoff, then with 60 mm if needed.
+  The alternative rotation must pass the full contact/scene geometry filter;
+  wrist, arm, and bench collisions remain checked by the motion planner.
+  Both standoffs lead to the same contact position. The checked transit is
+  retained and executed by plan ID, avoiding a second random IK solve that
+  could select a different branch. Reuse requires fresh encoder feedback within
+  0.03 rad per joint of the checked transit start. During selection, pregrasp and
+  insertion states must retain 0.05 rad clearance from joint limits; the folded home
+  waypoint is exempt from this grasp-selection preference.
+  Pink IK uses up to ten attempts of 300 iterations, a 0.05 rad inward posture
+  target near joint limits, and 2 mm / 1° convergence tolerances (also bounded
+  by the endpoint limits). These are planning settings, not controller gains.
   Final approaches retain robot/self/bench collision checks and use absolute
   Cartesian targets at 80 mm/s with 0.3 m/s² acceleration. A 0.005 rad joint-path
   blend allowance avoids the severe corner slowdown seen with zero blending.
@@ -92,14 +105,19 @@ The folded zero-joint `home_joints` match Git HEAD's power-off-safe resting pose
   clearing the camera view. New frames and an unambiguous nearby object match are
   required. Failed poses are excluded relative to the latest object centroid.
   Object observations expire after 30 seconds, including planning/execution time.
+  Repeated fresh feedback samples are skipped when counting settling/hold
+  observations; stale feedback still fails. Home failures include joint errors.
 - After closing, lift vertically 100 mm and require one second of sustained jaw
   obstruction without another close command. Uncertain holds prevent a new pick.
   Encoder FK and jaw obstruction are the reported evidence; neither is independent
   visual proof that the intended object was lifted.
 
 `get_grasp_quality_report` exposes rejection counts and retained grasp metrics.
-The runtime project and lockfile live in `../runtime/graspgenx`; its environment
-is created under `temp/graspgenx-venv` on startup. The adjacent DimOS installation
+It also records each attempted orientation/standoff and its planning result.
+The runtime project and lockfile are packaged under
+`src/openyam_coordinator_agentic/grasping/grasp_gen_x/project/` at the repository
+root. The profile loader selects `temp/graspgenx-venv` beside this workspace
+profile as its environment on startup. The adjacent DimOS installation
 is used as a read-only dependency. Restart the grasp blueprint to load changes.
 
 The stricter contact gates are initial tuning values, not a measured optimum.
@@ -108,6 +126,21 @@ The 0–60° cone constrains the contact/insertion direction, not the entire joi
 transit from home. Collision checking uses observed scene geometry for insertion;
 it does not reconstruct hidden surfaces or attach the held object's full geometry
 to the carrying planner. Placement inherits absolute motion and convergence checks.
+
+### Target offsets
+
+No extra world-Z translation is added to a generated contact pose. The 120 mm
+translation in `grasp_frame_to_tcp` converts the generator's gripper-body origin
+to the URDF TCP, along the generated local approach axis. It matches
+`gripper_tip_joint` and must stay paired with that tool definition. It is not a
+120 mm world-height bias. The 100/60 mm pregrasp standoff and post-close 100 mm
+lift are separate waypoints. There is no 200 mm grasp-target height adjustment.
+The existing 20 **mm** collision-mesh extension is unrelated and is retained.
+
+The September 25 changes were made offline from source and September 24 logs.
+No tests, blueprint restart, or hardware commands were run. Their effect on
+physical success rate remains unmeasured; the residual encoder/depth errors
+have not been compensated with an arbitrary target offset.
 Physical gripper dimensions, depth bias, force tuning, and actual pick success
 rates still require dedicated measurements/trials. No tests or hardware trials
 were run for this implementation.

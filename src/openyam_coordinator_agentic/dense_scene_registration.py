@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Any
 import time
+from typing import Any
 
 import numpy as np
 from pydantic import Field
 
+from dimos.models.segmentation.edge_tam import BoxPromptImageSegmenter
 from dimos.msgs.geometry_msgs.Transform import Transform
 from dimos.msgs.sensor_msgs.Image import Image
-from dimos.perception.experimental.object import Object, Object as DetObject, aggregate_pointclouds, to_detection3d_array
-from dimos.perception.experimental.objectDB import ObjectDB
+from dimos.perception.detection.type.detection2d.imageDetections2D import ImageDetections2D
+from dimos.perception.experimental.object import (
+    Object,
+    aggregate_pointclouds,
+    to_detection3d_array,
+)
 from dimos.perception.experimental.object_scene_registration import (
     ObjectSceneRegistrationConfig,
     ObjectSceneRegistrationModule,
 )
+from dimos.perception.experimental.objectDB import ObjectDB
+from dimos.protocol.service.spec import BaseConfig
 
 
 class LatestObservationObjectDB(ObjectDB):
@@ -30,18 +37,21 @@ class LatestObservationObjectDB(ObjectDB):
         return updated
 
 
-class DenseObjectSceneRegistrationConfig(ObjectSceneRegistrationConfig):
+class GraspPerceptionConfig(BaseConfig):
     """Object-cloud parameters appropriate for close-range grasp generation."""
 
-    object_voxel_downsample_m: float = 0.002
-    object_mask_erode_pixels: int = 1
-    object_outlier_neighbors: int = 12
-    object_outlier_std_ratio: float = 0.75
+    object_voxel_downsample_m: float = Field(default=0.002, gt=0)
+    object_mask_erode_pixels: int = Field(default=1, ge=0)
+    object_outlier_neighbors: int = Field(default=12, ge=1)
+    object_outlier_std_ratio: float = Field(default=0.75, gt=0)
     detector_image_size: int = Field(default=1280, ge=320)
     max_frame_age_s: float = Field(default=2.0, gt=0)
     max_rgb_depth_skew_s: float = Field(default=0.03, gt=0)
-    support_plane_z_m: float = -0.02
     object_surface_margin_m: float = Field(default=0.003, ge=0)
+
+
+class DenseObjectSceneRegistrationConfig(ObjectSceneRegistrationConfig, GraspPerceptionConfig):
+    support_plane_z_m: float
 
 
 class DenseObjectSceneRegistrationModule(ObjectSceneRegistrationModule):
@@ -56,19 +66,22 @@ class DenseObjectSceneRegistrationModule(ObjectSceneRegistrationModule):
             min_detections_for_permanent=self.config.min_detections_for_permanent,
         )
 
-    def _create_segmenter(self):
+    def _create_segmenter(self) -> BoxPromptImageSegmenter | None:
         # Upstream calls this after constructing YOLOE and before subscribing
         # to frames. Native masks undo letterboxing before DimOS reads them.
         if self._detector_backend == "yoloe" and self._detector is not None:
             self._detector.model.overrides.update(
-                imgsz=self.config.detector_image_size, retina_masks=True,
+                imgsz=self.config.detector_image_size,
+                retina_masks=True,
             )
         return super()._create_segmenter()
 
-    def _process_images(self, color_msg: Image, depth_msg: Image) -> list[DetObject]:
+    def _process_images(self, color_msg: Image, depth_msg: Image) -> list[Object]:
         now = time.time()
         ages = [now - color_msg.ts, now - depth_msg.ts]
-        if any(not np.isfinite(age) or age < -0.1 or age > self.config.max_frame_age_s for age in ages):
+        if any(
+            not np.isfinite(age) or age < -0.1 or age > self.config.max_frame_age_s for age in ages
+        ):
             raise RuntimeError("RGB-D frames are stale or have invalid timestamps")
         if abs(color_msg.ts - depth_msg.ts) > self.config.max_rgb_depth_skew_s:
             raise RuntimeError("RGB and depth timestamps do not match")
@@ -76,11 +89,11 @@ class DenseObjectSceneRegistrationModule(ObjectSceneRegistrationModule):
 
     def _process_3d_detections(
         self,
-        detections_2d: Any,
+        detections_2d: ImageDetections2D[Any],
         color_image: Image,
         depth_image: Image,
         camera_transform: Transform | None,
-    ) -> list[DetObject]:
+    ) -> list[Object]:
         if self._camera_info is None:
             return []
         if self._target_frame != color_image.frame_id and camera_transform is None:
@@ -107,7 +120,10 @@ class DenseObjectSceneRegistrationModule(ObjectSceneRegistrationModule):
             points = obj.pointcloud.points_f32()
             keep = np.flatnonzero(
                 np.all(np.isfinite(points), axis=1)
-                & (points[:, 2] > self.config.support_plane_z_m + self.config.object_surface_margin_m)
+                & (
+                    points[:, 2]
+                    > self.config.support_plane_z_m + self.config.object_surface_margin_m
+                )
             )
             if len(keep) < 10:
                 continue

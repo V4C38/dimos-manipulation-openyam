@@ -5,3 +5,7 @@ __pycache__/
 workspace-config/calibration-records/
 workspace-config/temp/
 mobileclip_blt.ts
+.venv/
+.ruff_cache/
+build/
+dist/
