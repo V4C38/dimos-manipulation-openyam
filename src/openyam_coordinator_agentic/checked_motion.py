@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping, Sequence
+import threading
 import time
 from typing import Protocol
 
@@ -45,6 +47,10 @@ class CheckedManipulationSpec(ManipulationSpec, Protocol):
     ) -> SkillResult: ...
     def execute_grasp_transit(self, plan_id: str, planning_group: str) -> SkillResult: ...
     def move_to_contact(self, target: PoseStamped, planning_group: str) -> SkillResult: ...
+    def measured_group_samples(
+        self, planning_group: str, after_ts: float
+    ) -> list[tuple[JointState, PoseStamped]]: ...
+    def report_tracking_failure(self, reason: str) -> None: ...
 
 
 class GraspMotionConfig(BaseConfig):
@@ -70,6 +76,78 @@ class CheckedManipulationConfig(ManipulationModuleConfig, GraspMotionConfig):
 
 class CheckedManipulationModule(ManipulationModule):
     config: CheckedManipulationConfig
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._contact_trace_lock = threading.Lock()
+        self._contact_trace_joints: tuple[str, ...] = ()
+        self._contact_trace_feedback: deque[
+            tuple[float, list[float], list[float | None], list[float | None]]
+        ] = deque(maxlen=1200)
+        self._measured_feedback: deque[JointState] = deque(maxlen=600)
+
+    def _on_joint_state(self, msg: JointState) -> None:
+        aliases = self.config.joint_state_aliases
+        indices = {aliases.get(name, name): index for index, name in enumerate(msg.name)}
+        names = self.config.model.joint_names
+        if len(msg.position) == len(msg.name) and all(name in indices for name in names):
+            ordered = [indices[name] for name in names]
+            sample = JointState(
+                ts=msg.ts,
+                frame_id=msg.frame_id,
+                name=list(names),
+                position=[msg.position[index] for index in ordered],
+                velocity=[msg.velocity[index] for index in ordered]
+                if len(msg.velocity) == len(msg.name)
+                else [],
+                effort=[msg.effort[index] for index in ordered]
+                if len(msg.effort) == len(msg.name)
+                else [],
+            )
+            with self._contact_trace_lock:
+                self._measured_feedback.append(sample)
+        super()._on_joint_state(msg)
+        # Buffer the raw coordinator stream; write one log after the motion so
+        # diagnostics do not add logging work to the 100 Hz feedback callback.
+        with self._contact_trace_lock:
+            joint_names = self._contact_trace_joints
+            if not joint_names:
+                return
+            positions = dict(zip(msg.name, msg.position))
+            velocities = dict(zip(msg.name, msg.velocity))
+            efforts = dict(zip(msg.name, msg.effort))
+            if all(name in positions for name in joint_names):
+                self._contact_trace_feedback.append(
+                    (
+                        msg.ts,
+                        [positions[name] for name in joint_names],
+                        [velocities.get(name) for name in joint_names],
+                        [efforts.get(name) for name in joint_names],
+                    )
+                )
+
+    @rpc
+    def measured_group_samples(
+        self, planning_group: str, after_ts: float
+    ) -> list[tuple[JointState, PoseStamped]]:
+        """Return original feedback and FK from each corresponding joint sample."""
+        if self._world_monitor is None:
+            return []
+        with self._contact_trace_lock:
+            samples = [sample for sample in self._measured_feedback if sample.ts > after_ts]
+        result = []
+        for sample in samples:
+            try:
+                pose = self._world_monitor.get_group_ee_pose(planning_group, sample)
+            except (KeyError, ValueError, RuntimeError):
+                continue
+            result.append((sample, pose))
+        return result
+
+    @rpc
+    def report_tracking_failure(self, reason: str) -> None:
+        """Flush the adapter's motor trace after a measured settling failure."""
+        self._control_coordinator.emit_motor_trace(reason)
 
     def _discard_plan(self, plan_id: str) -> None:
         """Discard only this request's plan, preserving a concurrent replacement."""
@@ -296,8 +374,8 @@ class CheckedManipulationModule(ManipulationModule):
                 return SkillResult.fail(
                     "EXECUTION_FAILED", "Checked transit was cancelled or replaced"
                 )
-        state = self.get_state().groups.get(planning_group)
-        joints = None if state is None else state.joints
+        samples = self.measured_group_samples(planning_group, time.time() - 0.2)
+        joints = samples[-1][0] if samples else None
         if joints is None or not -0.1 <= time.time() - joints.ts <= 0.5:
             self._discard_plan(plan_id)
             return SkillResult.fail("EXECUTION_FAILED", "Fresh transit-start feedback unavailable")
@@ -368,10 +446,10 @@ class CheckedManipulationModule(ManipulationModule):
     @rpc
     def move_to_contact(self, target: PoseStamped, planning_group: str) -> SkillResult:
         """Plan an absolute pose, including orientation, and check its endpoint."""
-        state = self.get_state().groups.get(planning_group)
-        if state is None or state.joints is None or state.end_effector_pose is None:
+        samples = self.measured_group_samples(planning_group, time.time() - 0.2)
+        if not samples:
             return SkillResult.fail("EXECUTION_FAILED", "Fresh current TCP/joints unavailable")
-        if not -0.1 <= time.time() - state.joints.ts <= 0.5:
+        if not -0.1 <= time.time() - samples[-1][0].ts <= 0.5:
             return SkillResult.fail("EXECUTION_FAILED", "Current joint feedback is stale")
         plan = self._generate_contact_plan(target, planning_group)
         if plan is None:
@@ -379,7 +457,32 @@ class CheckedManipulationModule(ManipulationModule):
         if failure := self._endpoint_failure(self._final_state(plan), target, planning_group):
             self._discard_plan(plan.plan_id)
             return SkillResult.fail("PLANNING_FAILED", failure)
-        execution = self.execute(blocking=True, plan_id=plan.plan_id)
+        joint_names = tuple(plan.trajectory.joint_names)
+        with self._contact_trace_lock:
+            self._contact_trace_joints = joint_names
+            self._contact_trace_feedback.clear()
+        try:
+            execution = self.execute(blocking=True, plan_id=plan.plan_id)
+        except Exception:
+            with self._contact_trace_lock:
+                self._contact_trace_joints = ()
+                self._contact_trace_feedback.clear()
+            raise
+        with self._contact_trace_lock:
+            feedback = list(self._contact_trace_feedback)
+            self._contact_trace_joints = ()
+            self._contact_trace_feedback.clear()
+        if not execution.succeeded:
+            logger.warning(
+                "OpenYAM failed Cartesian feedback trace",
+                plan_id=plan.plan_id,
+                joint_names=joint_names,
+                feedback=feedback[-300:],
+            )
+            try:
+                self.report_tracking_failure("Cartesian execution failed")
+            except Exception as exc:
+                logger.warning("OpenYAM motor trace unavailable", error=str(exc))
         if not execution.succeeded:
             return SkillResult.fail("EXECUTION_FAILED", execution.message)
         return SkillResult.ok("Contact trajectory commands completed", plan_id=plan.plan_id)

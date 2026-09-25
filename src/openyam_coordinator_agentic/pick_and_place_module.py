@@ -57,6 +57,10 @@ class GraspExecutionConfig(PickAndPlaceModuleConfig):
     home_joint_tolerance_rad: float = Field(default=0.02, gt=0)
     supported_contact_tolerance_m: float = Field(default=0.015, gt=0, le=0.015)
     pregrasp_fallback_offset_m: float = Field(default=0.06, gt=0, le=0.1)
+    stationary_interval_s: float = Field(default=0.4, gt=0)
+    max_feedback_gap_s: float = Field(default=0.05, gt=0)
+    max_stationary_step_rad: float = Field(default=0.004, gt=0)
+    max_stationary_velocity_rad_s: float = Field(default=0.04, gt=0)
 
 
 class OpenYamPickAndPlaceConfig(GraspExecutionConfig):
@@ -130,7 +134,7 @@ class OpenYamPickAndPlaceModule(PickAndPlaceModule):
     def _await_pose(
         self, target: PoseStamped, group: str, *, position_tolerance_m: float | None = None
     ) -> SkillResult | None:
-        """Require three distinct, fresh encoder observations at the target."""
+        """Require a continuous interval of fresh, stationary motor feedback."""
         tolerance = (
             self.config.contact_position_tolerance_m
             if position_tolerance_m is None
@@ -138,42 +142,80 @@ class OpenYamPickAndPlaceModule(PickAndPlaceModule):
         )
         deadline = time.monotonic() + self.config.settle_timeout_s
         started = time.time()
-        previous_ts = 0.0
-        stable = 0
+        previous_ts = started
+        previous_positions: list[float] | None = None
+        stable_since: float | None = None
         distance, angle = float("inf"), float("inf")
+        first_error: tuple[float, float] | None = None
+        best_distance = float("inf")
+        samples = 0
         while time.monotonic() < deadline:
-            state = self._manipulation.get_state().groups.get(group)
-            joints = None if state is None else state.joints
-            reached = None if state is None else state.end_effector_pose
-            fresh = (
-                joints is not None
-                and np.isfinite(joints.ts)
-                and joints.ts > max(started, previous_ts)
-                and -0.1 <= time.time() - joints.ts <= self.config.max_joint_state_age_s
-            )
-            if fresh and reached is not None:
+            observations = self._manipulation.measured_group_samples(group, previous_ts)
+            for joints, reached in observations:
+                age = time.time() - joints.ts
+                if (
+                    not np.isfinite(joints.ts)
+                    or joints.ts <= previous_ts
+                    or not -0.1 <= age <= self.config.max_joint_state_age_s
+                ):
+                    stable_since = None
+                    continue
+                gap = joints.ts - previous_ts
                 previous_ts = joints.ts
                 distance, angle = pose_error(reached, target)
-                slow = not joints.velocity or max(abs(v) for v in joints.velocity) < 0.04
-                stable = (
-                    stable + 1
-                    if (
-                        slow
-                        and distance <= tolerance
-                        and angle <= self.config.contact_orientation_tolerance_deg
-                    )
-                    else 0
+                if first_error is None:
+                    first_error = (distance, angle)
+                best_distance = min(best_distance, distance)
+                samples += 1
+                velocities = joints.velocity
+                step = (
+                    max(abs(a - b) for a, b in zip(joints.position, previous_positions))
+                    if previous_positions is not None
+                    else 0.0
                 )
-                if stable >= 3:
-                    return None
-            elif (
-                joints is None
-                or not -0.1 <= time.time() - joints.ts <= self.config.max_joint_state_age_s
+                previous_positions = joints.position
+                stationary = (
+                    len(velocities) == len(joints.position)
+                    and bool(velocities)
+                    and np.isfinite(velocities).all()
+                    and max(abs(value) for value in velocities)
+                    <= self.config.max_stationary_velocity_rad_s
+                    and step <= self.config.max_stationary_step_rad
+                    and gap <= self.config.max_feedback_gap_s
+                    and distance <= tolerance
+                    and angle <= self.config.contact_orientation_tolerance_deg
+                )
+                if stationary:
+                    if stable_since is None:
+                        stable_since = joints.ts
+                else:
+                    stable_since = None
+            if (
+                stable_since is not None
+                and previous_ts - stable_since >= self.config.stationary_interval_s
+                and time.time() - previous_ts <= self.config.max_feedback_gap_s
             ):
-                # Re-reading the same fresh snapshot is not evidence of motion.
-                stable = 0
-            time.sleep(0.1)
+                return None
+            if time.time() - previous_ts > self.config.max_feedback_gap_s:
+                stable_since = None
+            time.sleep(0.03)
         self._manipulation.cancel()
+        try:
+            self._manipulation.report_tracking_failure(f"{group} settling failed")
+        except Exception as exc:
+            logger.warning("OpenYAM motor trace unavailable", error=str(exc))
+        logger.warning(
+            "OpenYAM settling failed",
+            planning_group=group,
+            fresh_samples=samples,
+            settle_timeout_s=self.config.settle_timeout_s,
+            position_tolerance_m=tolerance,
+            first_position_error_m=None if first_error is None else first_error[0],
+            first_orientation_error_deg=None if first_error is None else first_error[1],
+            best_position_error_m=best_distance if np.isfinite(best_distance) else None,
+            final_position_error_m=distance if np.isfinite(distance) else None,
+            final_orientation_error_deg=angle if np.isfinite(angle) else None,
+        )
         return SkillResult.fail(
             "EXECUTION_FAILED", f"TCP did not converge ({distance:.4f} m, {angle:.2f} deg)"
         )
@@ -201,15 +243,12 @@ class OpenYamPickAndPlaceModule(PickAndPlaceModule):
             return None, failure
         if failure := self._observation_failure(cloud):
             return None, failure
-        state = self._manipulation.get_state().groups.get(group)
-        if (
-            state is None
-            or state.joints is None
-            or state.end_effector_pose is None
-            or not -0.1 <= time.time() - state.joints.ts <= self.config.max_joint_state_age_s
-        ):
+        observations = self._manipulation.measured_group_samples(group, time.time() - 0.2)
+        if not observations:
             return None, SkillResult.fail("EXECUTION_FAILED", "Fresh contact feedback unavailable")
-        reached = state.end_effector_pose
+        joints, reached = observations[-1]
+        if not -0.1 <= time.time() - joints.ts <= self.config.max_feedback_gap_s:
+            return None, SkillResult.fail("EXECUTION_FAILED", "Fresh contact feedback unavailable")
         distance, angle = pose_error(reached, target)
         if (
             distance > self.config.supported_contact_tolerance_m
@@ -247,7 +286,11 @@ class OpenYamPickAndPlaceModule(PickAndPlaceModule):
             return None, failure
         return reached, None
 
-    def _close_and_verify(self, planning_group: str) -> SkillResult | None:
+    def _close_stationary_and_verify(
+        self, planning_group: str, contact_pose: PoseStamped
+    ) -> SkillResult | None:
+        if failure := self._await_pose(contact_pose, planning_group, position_tolerance_m=0.002):
+            return failure
         logger.info(
             "OpenYAM close requested",
             planning_group=planning_group,
@@ -647,7 +690,7 @@ class OpenYamPickAndPlaceModule(PickAndPlaceModule):
             self._last_grasp_leg = (pregrasp, grasp, group)
             if failure := self._observation_failure(pointcloud):
                 return failure
-            if failure := self._close_and_verify(group):
+            if failure := self._close_stationary_and_verify(group, grasp):
                 relative = pose_matrix(
                     GraspCandidate(
                         Pose(position=grasp.position, orientation=grasp.orientation),

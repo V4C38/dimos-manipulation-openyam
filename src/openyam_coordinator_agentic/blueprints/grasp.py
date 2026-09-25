@@ -21,6 +21,7 @@ from openyam_coordinator_agentic.collision_model import model_config
 from openyam_coordinator_agentic.config import OpenYamWorkspaceConfig, load_workspace_config
 from openyam_coordinator_agentic.dense_scene_registration import DenseObjectSceneRegistrationModule
 from openyam_coordinator_agentic.grasping.grasp_gen_x.module import ConfiguredGraspGenXModule
+from openyam_coordinator_agentic.openyam_adapter import OpenYamDiagnosticCoordinator
 from openyam_coordinator_agentic.pick_and_place_module import OpenYamPickAndPlaceModule
 from openyam_coordinator_agentic.workspace_geometry import workspace_obstacles
 from openyam_coordinator_agentic.workspace_module import (
@@ -38,7 +39,10 @@ def make_openyam_grasp_graspgenx(config: OpenYamWorkspaceConfig) -> Blueprint:
             "home_joints": list(config.home_joints),
         }
     )
+    model.model = config.planning_model(model.model)
     hardware = openyam_hardware()
+    if hardware.adapter_type == "openyam_damiao":
+        hardware = replace(hardware, adapter_type="openyam_traced_damiao")
     if config.arm_control is not None:
         hardware = replace(
             hardware,
@@ -95,8 +99,8 @@ def make_openyam_grasp_graspgenx(config: OpenYamWorkspaceConfig) -> Blueprint:
             world_frame="world",
             static_transforms=[mount],
             visualization={"backend": "viser"},
-            default_speed_scale=0.7,
-            linear_speed_scale=0.7,
+            default_speed_scale=1.0,
+            linear_speed_scale=1.0,
             obstacles=workspace_obstacles(config),
             **config.approach_planning.model_dump(),
         ),
@@ -112,6 +116,8 @@ def make_openyam_grasp_graspgenx(config: OpenYamWorkspaceConfig) -> Blueprint:
         ManipulationSkills.blueprint(),
         coordinator(
             hardware=[hardware],
+            cls=OpenYamDiagnosticCoordinator,
+            instance_name="ControlCoordinator",
             tasks=[
                 trajectory_task(hardware),
                 TaskConfig(

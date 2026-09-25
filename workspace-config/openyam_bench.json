@@ -1,15 +1,15 @@
 {
   "camera_serial": "261622074549",
   "camera_translation_m": [
-    -0.27318471957349055,
-    -0.2937850227445154,
-    0.5093247199843945
+    -0.27273557401302306,
+    -0.29525548031877014,
+    0.5099850642991663
   ],
   "camera_quaternion_xyzw": [
-    -0.035248863677663306,
-    0.5843313312710977,
-    -0.006664962270616087,
-    0.8107218950924611
+    -0.0355717102287318,
+    0.5846288234234761,
+    -0.005500719189043898,
+    0.8105020261185585
   ],
   "perception": {
     "color_width": 1280,
@@ -63,6 +63,9 @@
     ]
   },
   "collision_model": "yam_collision.urdf",
+  "planning_joint_limits_rad": {
+    "yam_joint4": [-1.45, 1.5708]
+  },
   "home_joints": [
     0.0,
     0.0,
@@ -176,7 +179,7 @@
     ]
   },
   "workspace_calibration": {
-    "method": "live AprilTag alignment with fixed 70 mm tag-to-arm offset",
+    "method": "live AprilTag alignment with 120 mm center-to-center tag-to-arm offset",
     "scene_status": "Static scene unchanged; camera alignment updated"
   },
   "wrist_camera_calibration": {
@@ -357,8 +360,8 @@
   "approach_planning": {
     "endpoint_position_tolerance_m": 0.003,
     "endpoint_orientation_tolerance_deg": 2.0,
-    "approach_speed_m_s": 0.08,
-    "approach_acceleration_m_s2": 0.3,
+    "approach_speed_m_s": 0.04,
+    "approach_acceleration_m_s2": 0.15,
     "approach_blend_deviation_rad": 0.005,
     "max_approach_duration_s": 8.0,
     "ik_position_tolerance_m": 0.002,
@@ -373,17 +376,17 @@
     }
   },
   "grasp_execution": {
-    "pregrasp_offset": 0.1,
-    "pregrasp_fallback_offset_m": 0.06,
+    "pregrasp_offset": 0.06,
+    "pregrasp_fallback_offset_m": 0.04,
     "contact_position_tolerance_m": 0.005,
     "contact_orientation_tolerance_deg": 3.0,
-    "settle_timeout_s": 3.0,
+    "settle_timeout_s": 5.0,
     "max_joint_state_age_s": 0.5,
     "max_object_age_s": 30.0,
     "lift_distance_m": 0.1,
     "hold_verification_s": 1.0,
     "max_hold_aperture_change": 0.05,
     "home_joint_tolerance_rad": 0.02,
-    "supported_contact_tolerance_m": 0.015
+    "supported_contact_tolerance_m": 0.005
   }
 }
