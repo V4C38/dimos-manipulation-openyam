@@ -9,3 +9,4 @@ mobileclip_blt.ts
 .ruff_cache/
 build/
 dist/
+/audits/
